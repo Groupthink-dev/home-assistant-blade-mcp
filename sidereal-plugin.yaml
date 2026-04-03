@@ -1,0 +1,84 @@
+name: home-assistant-blade-mcp
+version: "0.1.0"
+description: "Home Assistant operations — entities, state, history, control, automations, energy, multi-site"
+author: piersdd
+licence: MIT
+tier: certified
+homepage: https://github.com/piersdd/home-assistant-blade-mcp
+contract: home-v1
+
+services:
+  home:
+    entity_list: ha_entities
+    entity_state: ha_state
+    entity_history: ha_history
+    area_list: ha_areas
+    scene_activate: ha_scene
+    climate_set: ha_climate
+    light_control: ha_light
+    automation_list: ha_automations
+    automation_trigger: ha_automation_trigger
+    lock_control: ha_lock
+    alarm_control: ha_alarm
+    camera_snapshot: ha_camera_snapshot
+    energy_stats: ha_statistics
+    automation_create: ha_automation_create
+
+setup:
+  icon: "🏠"
+  blurb: "Connect to Home Assistant for smart home control, monitoring, and automation management."
+  auth_model: api_key
+  complexity: trivial
+  fields:
+    - key: HA_URL
+      label: "Home Assistant URL"
+      secret: false
+      placeholder: "http://homeassistant.local:8123"
+      required: true
+    - key: HA_TOKEN
+      label: "Long-Lived Access Token"
+      secret: true
+      placeholder: "eyJhbGciOiJIUzI1NiIs..."
+      required: true
+      help: "Create at Profile → Security → Long-Lived Access Tokens"
+    - key: HA_WRITE_ENABLED
+      label: "Enable write operations"
+      secret: false
+      placeholder: "false"
+      required: false
+  test:
+    endpoint: "/api/"
+    auth_style: bearer
+    auth_header: "Authorization"
+  help:
+    - label: "HA REST API docs"
+      url: "https://developers.home-assistant.io/docs/api/rest"
+    - label: "Creating access tokens"
+      url: "https://www.home-assistant.io/docs/authentication/#your-account-profile"
+
+install:
+  runtime: uv
+  package: home-assistant-blade-mcp
+  command: home-assistant-blade-mcp
+
+env:
+  - name: HA_URL
+    description: "Home Assistant base URL (single-instance)"
+  - name: HA_TOKEN
+    description: "Long-lived access token"
+    secret: true
+  - name: HA_PROVIDERS
+    description: "Comma-separated provider names for multi-instance"
+  - name: HA_WRITE_ENABLED
+    description: "Enable write operations (device control, automations)"
+    default: "false"
+
+requires:
+  sidereal: ">=0.40"
+
+conformance:
+  required: "4/4"
+  recommended: "5/5"
+  optional: "2/2"
+  gated: "3/3"
+  last_tested: "2026-04-03"
