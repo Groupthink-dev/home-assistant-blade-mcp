@@ -35,6 +35,7 @@ setup:
       secret: false
       placeholder: "http://homeassistant.local:8123"
       required: true
+      help: "Base URL of your Home Assistant instance"
     - key: HA_TOKEN
       label: "Long-Lived Access Token"
       secret: true
@@ -43,9 +44,10 @@ setup:
       help: "Create at Profile → Security → Long-Lived Access Tokens"
     - key: HA_WRITE_ENABLED
       label: "Enable write operations"
+      type: boolean
       secret: false
-      placeholder: "false"
       required: false
+      help: "Device control, automation triggers, and scene activation"
   test:
     endpoint: "/api/"
     auth_style: bearer
