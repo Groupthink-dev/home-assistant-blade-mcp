@@ -51,7 +51,7 @@ setup:
       required: false
       help: "Device control, automation triggers, and scene activation"
   test:
-    endpoint: "/api/"
+    endpoint: "{HA_URL}/api/"
     auth_style: bearer
     auth_header: "Authorization"
   help:
