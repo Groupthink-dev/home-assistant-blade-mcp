@@ -80,6 +80,8 @@ env:
 requires:
   sidereal: ">=0.40"
 
+  adapter_contracts:
+    - "home >= 1.0"
 conformance:
   required: "4/4"
   recommended: "5/5"
