@@ -296,9 +296,15 @@ class HAClient:
         instance: str | None = None,
         area: str | None = None,
         limit: int = 50,
-    ) -> list[dict[str, Any]]:
-        """Get all entity states in a domain, optionally filtered by area."""
-        results = []
+    ) -> tuple[list[dict[str, Any]], int]:
+        """Get all entity states in a domain, optionally filtered by area.
+
+        Returns (results, matched_total) where matched_total is the count
+        of entities that match the domain/area predicates across all providers
+        BEFORE the limit truncation is applied (i.e. matched_total >= len(results)).
+        """
+        results: list[dict[str, Any]] = []
+        matched_total = 0
         for p in self._resolve_provider(instance):
             all_states = await self._rest(p, "GET", "/api/states")
 
@@ -317,11 +323,11 @@ class HAClient:
                     continue
                 if area and area_map.get(eid) != area:
                     continue
-                s["_instance"] = p.name
-                results.append(s)
-                if len(results) >= limit:
-                    return results
-        return results[:limit]
+                matched_total += 1
+                if len(results) < limit:
+                    s["_instance"] = p.name
+                    results.append(s)
+        return results, matched_total
 
     # -----------------------------------------------------------------------
     # History
@@ -457,7 +463,8 @@ class HAClient:
 
     async def list_automations(self, instance: str | None = None, limit: int = 50) -> list[dict[str, Any]]:
         """List automation entities with state."""
-        return await self.get_states_by_domain("automation", instance=instance, limit=limit)
+        records, _ = await self.get_states_by_domain("automation", instance=instance, limit=limit)
+        return records
 
     async def get_automation_config(self, automation_id: str, instance: str | None = None) -> dict[str, Any]:
         """Get full YAML config of an automation."""
@@ -492,7 +499,8 @@ class HAClient:
 
     async def list_scripts(self, instance: str | None = None, limit: int = 50) -> list[dict[str, Any]]:
         """List script entities."""
-        return await self.get_states_by_domain("script", instance=instance, limit=limit)
+        records, _ = await self.get_states_by_domain("script", instance=instance, limit=limit)
+        return records
 
     async def run_script(
         self, script_id: str, variables: dict[str, Any] | None = None, instance: str | None = None
@@ -506,7 +514,8 @@ class HAClient:
 
     async def list_scenes(self, instance: str | None = None, limit: int = 50) -> list[dict[str, Any]]:
         """List scene entities."""
-        return await self.get_states_by_domain("scene", instance=instance, limit=limit)
+        records, _ = await self.get_states_by_domain("scene", instance=instance, limit=limit)
+        return records
 
     # -----------------------------------------------------------------------
     # WebSocket: Registry
@@ -528,9 +537,15 @@ class HAClient:
         area: str | None = None,
         manufacturer: str | None = None,
         limit: int = 100,
-    ) -> list[dict[str, Any]]:
-        """List devices via WebSocket registry."""
-        results = []
+    ) -> tuple[list[dict[str, Any]], int]:
+        """List devices via WebSocket registry.
+
+        Returns (results, matched_total) where matched_total is the count
+        of devices that match the area/manufacturer predicates across all
+        providers BEFORE the limit truncation is applied.
+        """
+        results: list[dict[str, Any]] = []
+        matched_total = 0
         for p in self._resolve_provider(instance):
             data = await self._ws_call(p, "config/device_registry/list")
             for device in data:
@@ -538,11 +553,11 @@ class HAClient:
                     continue
                 if manufacturer and (device.get("manufacturer") or "").lower() != manufacturer.lower():
                     continue
-                device["_instance"] = p.name
-                results.append(device)
-                if len(results) >= limit:
-                    return results
-        return results[:limit]
+                matched_total += 1
+                if len(results) < limit:
+                    device["_instance"] = p.name
+                    results.append(device)
+        return results, matched_total
 
     async def list_entities_registry(
         self,
@@ -551,9 +566,15 @@ class HAClient:
         area: str | None = None,
         label: str | None = None,
         limit: int = 100,
-    ) -> list[dict[str, Any]]:
-        """List entities via WebSocket registry (more metadata than states)."""
-        results = []
+    ) -> tuple[list[dict[str, Any]], int]:
+        """List entities via WebSocket registry (more metadata than states).
+
+        Returns (results, matched_total) where matched_total is the count
+        of entities that match the domain/area/label predicates across all
+        providers BEFORE the limit truncation is applied.
+        """
+        results: list[dict[str, Any]] = []
+        matched_total = 0
         for p in self._resolve_provider(instance):
             data = await self._ws_call(p, "config/entity_registry/list")
             for entity in data:
@@ -564,11 +585,11 @@ class HAClient:
                     continue
                 if label and label not in entity.get("labels", []):
                     continue
-                entity["_instance"] = p.name
-                results.append(entity)
-                if len(results) >= limit:
-                    return results
-        return results[:limit]
+                matched_total += 1
+                if len(results) < limit:
+                    entity["_instance"] = p.name
+                    results.append(entity)
+        return results, matched_total
 
     async def list_floors(self, instance: str | None = None) -> list[dict[str, Any]]:
         """List floors via WebSocket registry."""
@@ -611,9 +632,15 @@ class HAClient:
         period: str = "hour",
         types: list[str] | None = None,
         instance: str | None = None,
-    ) -> list[dict[str, Any]]:
-        """Get recorder statistics for entities."""
-        results = []
+    ) -> tuple[list[dict[str, Any]], int]:
+        """Get recorder statistics for entities.
+
+        Returns (results, matched_total) where matched_total is the count
+        of statistic_id keys returned by HA across all providers. There is
+        no limit truncation on this tool — returned == matched_total.
+        """
+        results: list[dict[str, Any]] = []
+        matched_total = 0
         kwargs: dict[str, Any] = {
             "start_time": start,
             "statistic_ids": entity_ids,
@@ -625,8 +652,10 @@ class HAClient:
             kwargs["types"] = types
         for p in self._resolve_provider(instance):
             data = await self._ws_call(p, "recorder/statistics_during_period", **kwargs)
+            if isinstance(data, dict):
+                matched_total += len(data)
             results.append({"instance": p.name, "statistics": data})
-        return results
+        return results, matched_total
 
     async def list_statistic_ids(
         self, instance: str | None = None, statistic_type: str | None = None

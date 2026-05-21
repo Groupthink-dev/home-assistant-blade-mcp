@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import logging
 import os
+import time
 from typing import Annotated, Any
 
 from fastmcp import FastMCP
@@ -86,6 +87,76 @@ def _error(e: HAError) -> str:
     return f"Error: {e}"
 
 
+# ---------------------------------------------------------------------------
+# DD-338 / DD-278 scope-tag handling (HA-as-one-scope)
+# ---------------------------------------------------------------------------
+# HA structurally models a single household / building; only home-shaped
+# scopes are semantically honest. The relevant cross-household partitioning
+# lives at the instance= level (multi-site HA_PROVIDERS), not the scope= tag.
+
+# Scopes that pass through as audit-surfaced no-ops:
+_SCOPE_NOOP = {"home", "family", "personal"}
+
+# Scopes that semantically don't apply to HA — reject with an honest error
+# rather than silently over-fetch. Mirrors directives/vault-reference.md §3a.
+_SCOPE_NOT_APPLICABLE = {
+    "work",
+    "family-office",
+    "trustee-corporate",
+    "funds-investment",
+    "private-equity",
+    "algo-trading",
+    "infrastructure",
+    "groupthink-dev",
+    "school-education",
+    "side-hustle",
+    "family-people",
+    "family-education",
+    "family-extended",
+    "personal-services",
+    # property-* (all enumerated)
+    "property-sandy-bay",
+    "property-mountain-river",
+    "property-cascade-st",
+    "property-elizabeth-st",
+    "property-battery-point",
+    "property-hopetoun-ave",
+    "property-robertson",
+    "property-kensington-court",
+}
+
+
+def _scope_check(scope: str | None) -> str | None:
+    """Validate a DD-278 scope tag against HA's one-scope model.
+
+    Returns:
+        None — accept (no-op pass-through). Caller proceeds.
+        str  — error message. Caller short-circuits with this as the response.
+
+    Unknown values pass-through with implicit accept (defensive — DD-278
+    vocabulary may grow). Property-* prefixes are enumerated explicitly
+    rather than prefix-matched to keep the rejection contract honest.
+    """
+    if scope is None:
+        return None
+    if scope in _SCOPE_NOT_APPLICABLE:
+        return (
+            f"Error: scope={scope} not applicable to home-assistant tools "
+            f"(HA models a single household; use instance= for multi-site partitioning)"
+        )
+    return None  # home/family/personal or unrecognised — accept
+
+
+def _scope_audit_label(scope: str | None) -> str | None:
+    """Return the audit label for a scope, or None when scope is unset."""
+    if scope is None:
+        return None
+    if scope in _SCOPE_NOOP:
+        return f"scope={scope}"
+    # Unknown/unrecognised value — log it but pass through
+    return f"scope={scope} (unrecognised, treated as no-op)"
+
+
 # ===========================================================================
 # DOMAIN 1: META (3 tools)
 # ===========================================================================
@@ -152,32 +223,80 @@ async def ha_areas(
 @mcp.tool()
 async def ha_devices(
     instance: Annotated[str | None, Field(description="Target HA instance (omit for all)")] = None,
+    scope: Annotated[
+        str | None,
+        Field(description="DD-278 scope tag — home/family/personal accepted; out-of-vocab rejected"),
+    ] = None,
     area: Annotated[str | None, Field(description="Filter by area_id")] = None,
     manufacturer: Annotated[str | None, Field(description="Filter by manufacturer name")] = None,
     limit: Annotated[int, Field(description="Max results")] = 100,
 ) -> str:
     """List devices, optionally filtered by area or manufacturer. Uses WebSocket registry."""
+    rejection = _scope_check(scope)
+    if rejection:
+        return rejection
+    t0 = time.perf_counter()
     try:
-        results = await _get_client().list_devices(instance, area, manufacturer, limit)
-        return format_devices(results)
+        records, matched_total = await _get_client().list_devices(instance, area, manufacturer, limit)
     except HAError as e:
         return _error(e)
+    latency_ms = int((time.perf_counter() - t0) * 1000)
+    filtered_by: list[str] = []
+    scope_label = _scope_audit_label(scope)
+    if scope_label:
+        filtered_by.append(scope_label)
+    if area:
+        filtered_by.append(f"area={area}")
+    if manufacturer:
+        filtered_by.append(f"manufacturer={manufacturer}")
+    meta = {
+        "matched_total": matched_total,
+        "returned": len(records),
+        "filtered_by": filtered_by,
+        "latency_ms": latency_ms,
+    }
+    return format_devices(records, meta=meta)
 
 
 @mcp.tool()
 async def ha_entities(
     instance: Annotated[str | None, Field(description="Target HA instance (omit for all)")] = None,
+    scope: Annotated[
+        str | None,
+        Field(description="DD-278 scope tag — home/family/personal accepted; out-of-vocab rejected"),
+    ] = None,
     domain: Annotated[str | None, Field(description="Filter by domain (e.g. light, sensor)")] = None,
     area: Annotated[str | None, Field(description="Filter by area_id")] = None,
     label: Annotated[str | None, Field(description="Filter by label")] = None,
     limit: Annotated[int, Field(description="Max results")] = 100,
 ) -> str:
     """List entities from the registry with metadata (area, device, platform, labels). Uses WebSocket."""
+    rejection = _scope_check(scope)
+    if rejection:
+        return rejection
+    t0 = time.perf_counter()
     try:
-        results = await _get_client().list_entities_registry(instance, domain, area, label, limit)
-        return format_entity_registry(results)
+        records, matched_total = await _get_client().list_entities_registry(instance, domain, area, label, limit)
     except HAError as e:
         return _error(e)
+    latency_ms = int((time.perf_counter() - t0) * 1000)
+    filtered_by: list[str] = []
+    scope_label = _scope_audit_label(scope)
+    if scope_label:
+        filtered_by.append(scope_label)
+    if domain:
+        filtered_by.append(f"domain={domain}")
+    if area:
+        filtered_by.append(f"area={area}")
+    if label:
+        filtered_by.append(f"label={label}")
+    meta = {
+        "matched_total": matched_total,
+        "returned": len(records),
+        "filtered_by": filtered_by,
+        "latency_ms": latency_ms,
+    }
+    return format_entity_registry(records, meta=meta)
 
 
 @mcp.tool()
@@ -273,16 +392,38 @@ async def ha_states(
 async def ha_states_by_domain(
     domain: Annotated[str, Field(description="Entity domain (e.g. light, sensor, climate)")],
     instance: Annotated[str | None, Field(description="Target HA instance")] = None,
+    scope: Annotated[
+        str | None,
+        Field(description="DD-278 scope tag — home/family/personal accepted; out-of-vocab rejected"),
+    ] = None,
     area: Annotated[str | None, Field(description="Filter by area_id")] = None,
     fields: Annotated[list[str] | None, Field(description="Specific attributes to include")] = None,
     limit: Annotated[int, Field(description="Max results")] = DEFAULT_LIMIT,
 ) -> str:
     """Get all entity states in a domain (e.g. all lights, all sensors). Optional area filter."""
+    rejection = _scope_check(scope)
+    if rejection:
+        return rejection
+    t0 = time.perf_counter()
     try:
-        results = await _get_client().get_states_by_domain(domain, instance, area, limit)
-        return format_states_grouped(results, fields)
+        records, matched_total = await _get_client().get_states_by_domain(domain, instance, area, limit)
     except HAError as e:
         return _error(e)
+    latency_ms = int((time.perf_counter() - t0) * 1000)
+    filtered_by: list[str] = []
+    scope_label = _scope_audit_label(scope)
+    if scope_label:
+        filtered_by.append(scope_label)
+    filtered_by.append(f"domain={domain}")
+    if area:
+        filtered_by.append(f"area={area}")
+    meta = {
+        "matched_total": matched_total,
+        "returned": len(records),
+        "filtered_by": filtered_by,
+        "latency_ms": latency_ms,
+    }
+    return format_states_grouped(records, fields, meta=meta)
 
 
 @mcp.tool()
@@ -330,13 +471,34 @@ async def ha_statistics(
     period: Annotated[str, Field(description="Aggregation: 5minute, hour, day, week, month")] = "hour",
     types: Annotated[list[str] | None, Field(description="Stat types: mean, min, max, sum, change")] = None,
     instance: Annotated[str | None, Field(description="Target HA instance")] = None,
+    scope: Annotated[
+        str | None,
+        Field(description="DD-278 scope tag — home/family/personal accepted; out-of-vocab rejected"),
+    ] = None,
 ) -> str:
     """Recorder statistics (pre-aggregated). More efficient than raw ha_history for trends."""
+    rejection = _scope_check(scope)
+    if rejection:
+        return rejection
+    t0 = time.perf_counter()
     try:
-        results = await _get_client().get_statistics(entity_ids, start, end, period, types, instance)
-        return format_statistics(results)
+        records, matched_total = await _get_client().get_statistics(entity_ids, start, end, period, types, instance)
     except HAError as e:
         return _error(e)
+    latency_ms = int((time.perf_counter() - t0) * 1000)
+    filtered_by: list[str] = []
+    scope_label = _scope_audit_label(scope)
+    if scope_label:
+        filtered_by.append(scope_label)
+    filtered_by.append(f"entity_ids={len(entity_ids)}")
+    filtered_by.append(f"period={period}")
+    meta = {
+        "matched_total": matched_total,
+        "returned": matched_total,  # no limit truncation on statistics
+        "filtered_by": filtered_by,
+        "latency_ms": latency_ms,
+    }
+    return format_statistics(records, meta=meta)
 
 
 @mcp.tool()

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from typing import Any
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -106,7 +107,7 @@ class TestHaDevices:
     async def test_lists_devices(self, ha_env: None) -> None:
         with patch.object(server_module, "_get_client") as mock_gc:
             mock_client = AsyncMock()
-            mock_client.list_devices.return_value = [make_device()]
+            mock_client.list_devices.return_value = ([make_device()], 1)
             mock_gc.return_value = mock_client
             result = await server_module.ha_devices()
             assert "Philips" in result
@@ -117,10 +118,13 @@ class TestHaEntities:
     async def test_lists_entities(self, ha_env: None) -> None:
         with patch.object(server_module, "_get_client") as mock_gc:
             mock_client = AsyncMock()
-            mock_client.list_entities_registry.return_value = [
-                make_entity_registry("light.a"),
-                make_entity_registry("sensor.b"),
-            ]
+            mock_client.list_entities_registry.return_value = (
+                [
+                    make_entity_registry("light.a"),
+                    make_entity_registry("sensor.b"),
+                ],
+                2,
+            )
             mock_gc.return_value = mock_client
             result = await server_module.ha_entities()
             assert "## light" in result
@@ -321,3 +325,181 @@ class TestHaNotify:
             mock_gc.return_value = mock_client
             result = await server_module.ha_notify("mobile_app_phone", "Test message", title="Test")
             assert "sent" in result.lower()
+
+
+# ---------------------------------------------------------------------------
+# DD-338 Phase A.1 — scope arg + _meta envelope coverage
+# ---------------------------------------------------------------------------
+
+
+def _parse_meta(result: str) -> dict[str, Any]:
+    """Extract the trailing _meta JSON envelope from a tool response.
+
+    Mirrors the assembler regex from the architect amendment:
+        \\n\\n_meta: (\\{.*\\})$
+    """
+    import json
+    import re
+
+    match = re.search(r"\n\n_meta: (\{.*\})$", result, flags=re.DOTALL)
+    assert match is not None, f"No _meta envelope in result:\n{result}"
+    return json.loads(match.group(1))
+
+
+class TestHaDevicesScope:
+    @pytest.mark.asyncio
+    async def test_happy_path_includes_meta(self, ha_env: None) -> None:
+        with patch.object(server_module, "_get_client") as mock_gc:
+            mock_client = AsyncMock()
+            mock_client.list_devices.return_value = ([make_device(), make_device(device_id="xyz789")], 2)
+            mock_gc.return_value = mock_client
+            result = await server_module.ha_devices(scope="home", area="kitchen", limit=10)
+            meta = _parse_meta(result)
+            assert meta["matched_total"] == 2
+            assert meta["returned"] == 2
+            assert "scope=home" in meta["filtered_by"]
+            assert "area=kitchen" in meta["filtered_by"]
+            assert isinstance(meta["latency_ms"], int)
+
+    @pytest.mark.asyncio
+    async def test_rejects_work_scope(self, ha_env: None) -> None:
+        with patch.object(server_module, "_get_client") as mock_gc:
+            mock_client = AsyncMock()
+            mock_gc.return_value = mock_client
+            result = await server_module.ha_devices(scope="work")
+            assert result.startswith("Error: scope=work not applicable to home-assistant")
+            mock_client.list_devices.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_no_scope_arg_still_emits_meta(self, ha_env: None) -> None:
+        with patch.object(server_module, "_get_client") as mock_gc:
+            mock_client = AsyncMock()
+            mock_client.list_devices.return_value = ([make_device()], 1)
+            mock_gc.return_value = mock_client
+            result = await server_module.ha_devices()
+            meta = _parse_meta(result)
+            assert meta["matched_total"] == 1
+            assert meta["filtered_by"] == []
+
+
+class TestHaEntitiesScope:
+    @pytest.mark.asyncio
+    async def test_happy_path_includes_meta(self, ha_env: None) -> None:
+        with patch.object(server_module, "_get_client") as mock_gc:
+            mock_client = AsyncMock()
+            mock_client.list_entities_registry.return_value = (
+                [make_entity_registry("light.a"), make_entity_registry("light.b")],
+                2,
+            )
+            mock_gc.return_value = mock_client
+            result = await server_module.ha_entities(scope="home", domain="light")
+            meta = _parse_meta(result)
+            assert meta["matched_total"] == 2
+            assert meta["returned"] == 2
+            assert "scope=home" in meta["filtered_by"]
+            assert "domain=light" in meta["filtered_by"]
+
+    @pytest.mark.asyncio
+    async def test_rejects_trustee_scope(self, ha_env: None) -> None:
+        with patch.object(server_module, "_get_client") as mock_gc:
+            mock_client = AsyncMock()
+            mock_gc.return_value = mock_client
+            result = await server_module.ha_entities(scope="trustee-corporate")
+            assert result.startswith("Error: scope=trustee-corporate not applicable to home-assistant")
+            mock_client.list_entities_registry.assert_not_called()
+
+
+class TestHaStatesByDomainScope:
+    @pytest.mark.asyncio
+    async def test_happy_path_includes_meta(self, ha_env: None) -> None:
+        with patch.object(server_module, "_get_client") as mock_gc:
+            mock_client = AsyncMock()
+            mock_client.get_states_by_domain.return_value = (
+                [make_light_state("light.a"), make_light_state("light.b"), make_light_state("light.c")],
+                3,
+            )
+            mock_gc.return_value = mock_client
+            result = await server_module.ha_states_by_domain("light", scope="home")
+            meta = _parse_meta(result)
+            assert meta["matched_total"] == 3
+            assert meta["returned"] == 3
+            assert "scope=home" in meta["filtered_by"]
+            assert "domain=light" in meta["filtered_by"]
+
+    @pytest.mark.asyncio
+    async def test_rejects_algo_trading_scope(self, ha_env: None) -> None:
+        with patch.object(server_module, "_get_client") as mock_gc:
+            mock_client = AsyncMock()
+            mock_gc.return_value = mock_client
+            result = await server_module.ha_states_by_domain("light", scope="algo-trading")
+            assert result.startswith("Error: scope=algo-trading not applicable to home-assistant")
+            mock_client.get_states_by_domain.assert_not_called()
+
+
+class TestHaStatisticsScope:
+    @pytest.mark.asyncio
+    async def test_happy_path_includes_meta(self, ha_env: None) -> None:
+        with patch.object(server_module, "_get_client") as mock_gc:
+            mock_client = AsyncMock()
+            mock_client.get_statistics.return_value = (
+                [
+                    {
+                        "instance": "default",
+                        "statistics": {"sensor.power": [{"start": "2026-05-01T00:00:00", "mean": 100}]},
+                    }
+                ],
+                1,
+            )
+            mock_gc.return_value = mock_client
+            result = await server_module.ha_statistics(
+                entity_ids=["sensor.power"],
+                start="2026-05-01T00:00:00+10:00",
+                scope="home",
+            )
+            meta = _parse_meta(result)
+            assert meta["matched_total"] == 1
+            assert meta["returned"] == 1
+            assert "scope=home" in meta["filtered_by"]
+
+    @pytest.mark.asyncio
+    async def test_rejects_private_equity_scope(self, ha_env: None) -> None:
+        with patch.object(server_module, "_get_client") as mock_gc:
+            mock_client = AsyncMock()
+            mock_gc.return_value = mock_client
+            result = await server_module.ha_statistics(
+                entity_ids=["sensor.power"],
+                start="2026-05-01T00:00:00+10:00",
+                scope="private-equity",
+            )
+            assert result.startswith("Error: scope=private-equity not applicable to home-assistant")
+            mock_client.get_statistics.assert_not_called()
+
+
+class TestScopeCheckUnit:
+    """Unit tests for the _scope_check helper itself."""
+
+    def test_none_passes(self) -> None:
+        assert server_module._scope_check(None) is None
+
+    def test_home_passes(self) -> None:
+        assert server_module._scope_check("home") is None
+
+    def test_family_passes(self) -> None:
+        assert server_module._scope_check("family") is None
+
+    def test_personal_passes(self) -> None:
+        assert server_module._scope_check("personal") is None
+
+    def test_work_rejected(self) -> None:
+        rejection = server_module._scope_check("work")
+        assert rejection is not None
+        assert "not applicable to home-assistant" in rejection
+
+    def test_property_rejected(self) -> None:
+        rejection = server_module._scope_check("property-sandy-bay")
+        assert rejection is not None
+        assert "not applicable to home-assistant" in rejection
+
+    def test_unknown_passes_through(self) -> None:
+        # Defensive — DD-278 vocabulary may grow
+        assert server_module._scope_check("brand-new-scope-2027") is None
