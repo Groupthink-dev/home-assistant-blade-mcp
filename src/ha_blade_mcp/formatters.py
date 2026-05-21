@@ -9,8 +9,26 @@ All formatters return compact strings optimised for LLM consumption:
 
 from __future__ import annotations
 
+import json
 from collections.abc import Callable
 from typing import Any
+
+
+def _append_meta(body: str, meta: dict[str, Any] | None) -> str:
+    """Append a DD-338 _meta envelope as a JSON-tail block after body.
+
+    Wire shape (DD-338 Phase A.1 architect amendment):
+
+        <body>
+
+        _meta: {"matched_total": N, "returned": M, "filtered_by": [...], "latency_ms": X}
+
+    Single line, JSON object, appended after `\\n\\n`. Assembler regex:
+    `\\n\\n_meta: (\\{.*\\})$`. Returns body verbatim when meta is None.
+    """
+    if meta is None:
+        return body
+    return f"{body}\n\n_meta: {json.dumps(meta, separators=(', ', ': '), ensure_ascii=False)}"
 
 
 def _pick(data: dict[str, Any], *keys: str) -> list[str]:
@@ -169,10 +187,15 @@ def format_entity_list(entities: list[dict[str, Any]], fields: list[str] | None 
     return "\n".join(lines)
 
 
-def format_states_grouped(entities: list[dict[str, Any]], fields: list[str] | None = None) -> str:
+def format_states_grouped(
+    entities: list[dict[str, Any]],
+    fields: list[str] | None = None,
+    meta: dict[str, Any] | None = None,
+) -> str:
     """Format entities grouped by instance, then by domain."""
     groups = _group_by_instance(entities)
-    return _with_instance_header(groups, lambda items: format_entity_list(items, fields))
+    body = _with_instance_header(groups, lambda items: format_entity_list(items, fields))
+    return _append_meta(body, meta)
 
 
 # ---------------------------------------------------------------------------
@@ -253,10 +276,10 @@ def format_areas(areas: list[dict[str, Any]]) -> str:
     return "\n".join(lines)
 
 
-def format_devices(devices: list[dict[str, Any]]) -> str:
+def format_devices(devices: list[dict[str, Any]], meta: dict[str, Any] | None = None) -> str:
     """Format devices as compact lines."""
     if not devices:
-        return "(no devices)"
+        return _append_meta("(no devices)", meta)
     groups = _group_by_instance(devices)
     lines = []
     for inst, items in groups.items():
@@ -270,7 +293,7 @@ def format_devices(devices: list[dict[str, Any]]) -> str:
             if d.get("disabled_by"):
                 parts.append("DISABLED")
             lines.append(" | ".join(parts))
-    return "\n".join(lines)
+    return _append_meta("\n".join(lines), meta)
 
 
 def format_floors(floors: list[dict[str, Any]]) -> str:
@@ -302,10 +325,10 @@ def format_labels(labels: list[dict[str, Any]]) -> str:
 # ---------------------------------------------------------------------------
 
 
-def format_entity_registry(entities: list[dict[str, Any]]) -> str:
+def format_entity_registry(entities: list[dict[str, Any]], meta: dict[str, Any] | None = None) -> str:
     """Format entity registry entries as compact lines, grouped by domain."""
     if not entities:
-        return "(no entities)"
+        return _append_meta("(no entities)", meta)
     by_domain: dict[str, list[dict[str, Any]]] = {}
     for e in entities:
         eid = e.get("entity_id", "?.?")
@@ -330,7 +353,7 @@ def format_entity_registry(entities: list[dict[str, Any]]) -> str:
             if labels:
                 parts.append(f"labels={','.join(labels)}")
             lines.append(" | ".join(parts))
-    return "\n".join(lines)
+    return _append_meta("\n".join(lines), meta)
 
 
 # ---------------------------------------------------------------------------
@@ -420,10 +443,10 @@ def format_calendar_events(events: list[dict[str, Any]]) -> str:
 # ---------------------------------------------------------------------------
 
 
-def format_statistics(results: list[dict[str, Any]]) -> str:
+def format_statistics(results: list[dict[str, Any]], meta: dict[str, Any] | None = None) -> str:
     """Format recorder statistics as compact lines."""
     if not results:
-        return "(no statistics)"
+        return _append_meta("(no statistics)", meta)
     lines = []
     for r in results:
         inst = r.get("instance", "?")
@@ -441,7 +464,7 @@ def format_statistics(results: list[dict[str, Any]]) -> str:
                 if not any(k in dp for k in ("mean", "min", "max", "sum", "change")):
                     parts.append(f"state={dp.get('state', '?')}")
                 lines.append(" | ".join(str(p) for p in parts))
-    return "\n".join(lines)
+    return _append_meta("\n".join(lines), meta)
 
 
 def format_statistic_ids(ids: list[dict[str, Any]]) -> str:
