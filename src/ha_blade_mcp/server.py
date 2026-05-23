@@ -357,9 +357,11 @@ async def ha_error_log(
 async def ha_areas(
     instance: Annotated[str | None, Field(description="Target HA instance (omit for all)")] = None,
 ) -> str:
-    """List all areas with floor assignment and aliases. Uses WebSocket registry."""
+    """List all areas with floor assignment and aliases. Uses WebSocket registry. Sorted by area_id ascending."""
     try:
         results = await _get_client().list_areas(instance)
+        # DD-338 B.1.b: canonical sort-before-return on area_id ascending.
+        results = sorted(results, key=lambda a: a.get("area_id", "") or "")
         return format_areas(results)
     except HAError as e:
         return _error(e)
@@ -385,6 +387,8 @@ async def ha_devices(
         records, matched_total = await _get_client().list_devices(instance, area, manufacturer, limit)
     except HAError as e:
         return _error(e)
+    # DD-338 B.1.b: canonical sort-before-return on device id ascending.
+    records = sorted(records, key=lambda d: d.get("id", "") or "")
     latency_ms = int((time.perf_counter() - t0) * 1000)
     filtered_by: list[str] = []
     scope_label = _scope_audit_label(scope)
@@ -427,6 +431,8 @@ async def ha_entities(
         records, matched_total = await _get_client().list_entities_registry(instance, domain, area, label, limit)
     except HAError as e:
         return _error(e)
+    # DD-338 B.1.b: canonical sort-before-return on entity_id ascending.
+    records = sorted(records, key=lambda e: e.get("entity_id", "") or "")
     latency_ms = int((time.perf_counter() - t0) * 1000)
     filtered_by: list[str] = []
     scope_label = _scope_audit_label(scope)
@@ -454,9 +460,11 @@ async def ha_entities(
 async def ha_floors(
     instance: Annotated[str | None, Field(description="Target HA instance (omit for all)")] = None,
 ) -> str:
-    """List floors with their level and icon. Uses WebSocket registry."""
+    """List floors with their level and icon. Uses WebSocket registry. Sorted by floor_id ascending."""
     try:
         results = await _get_client().list_floors(instance)
+        # DD-338 B.1.b: canonical sort-before-return on floor_id ascending.
+        results = sorted(results, key=lambda f: f.get("floor_id", "") or "")
         return format_floors(results)
     except HAError as e:
         return _error(e)
@@ -466,9 +474,11 @@ async def ha_floors(
 async def ha_labels(
     instance: Annotated[str | None, Field(description="Target HA instance (omit for all)")] = None,
 ) -> str:
-    """List all labels with color and description. Uses WebSocket registry."""
+    """List all labels with color and description. Uses WebSocket registry. Sorted by label_id ascending."""
     try:
         results = await _get_client().list_labels(instance)
+        # DD-338 B.1.b: canonical sort-before-return on label_id ascending.
+        results = sorted(results, key=lambda lb: lb.get("label_id", "") or "")
         return format_labels(results)
     except HAError as e:
         return _error(e)
@@ -483,9 +493,19 @@ async def ha_search(
     item_id: Annotated[str, Field(description="ID of the item to find relations for")],
     instance: Annotated[str | None, Field(description="Target HA instance (omit for all)")] = None,
 ) -> str:
-    """Find related entities, devices, areas, and automations for a given item. Graph traversal."""
+    """Find related entities, devices, areas, and automations for a given item. Graph traversal.
+    Outer item-type traversal preserves upstream relevance order; each per-item-type list is sorted ascending."""
     try:
         results = await _get_client().search_related(item_type, item_id, instance)
+        # DD-338 B.1.b: sort inner per-item-type lists ascending while preserving
+        # the outer item-type iteration order (relevance signal from upstream).
+        for r in results:
+            for k in list(r.keys()):
+                if k.startswith("_"):
+                    continue
+                v = r.get(k)
+                if isinstance(v, list):
+                    r[k] = sorted(v, key=lambda x: str(x) if x is not None else "")
         return format_search_related(results)
     except HAError as e:
         return _error(e)
@@ -496,9 +516,12 @@ async def ha_services_list(
     instance: Annotated[str | None, Field(description="Target HA instance (omit for all)")] = None,
     domain: Annotated[str | None, Field(description="Filter to a specific domain")] = None,
 ) -> str:
-    """List available service domains and their services. Use domain= to filter."""
+    """List available service domains and their services. Use domain= to filter.
+    Deterministic ordering: domains sorted ascending, service names sorted ascending (upheld by format_services)."""
     try:
         results = await _get_client().list_services(instance, domain)
+        # DD-338 B.1.b: deterministic ordering upheld by format_services
+        # (sorts svc_domain entries on `domain` ascending; service names sorted ascending).
         return format_services(results, domain)
     except HAError as e:
         return _error(e)
@@ -531,9 +554,14 @@ async def ha_states(
     instance: Annotated[str | None, Field(description="Target HA instance")] = None,
     fields: Annotated[list[str] | None, Field(description="Specific attributes to include")] = None,
 ) -> str:
-    """Get states for multiple entities in one call. More efficient than repeated ha_state calls."""
+    """Get states for multiple entities in one call. More efficient than repeated ha_state calls.
+    Returned entities sorted by entity_id ascending (also upheld by format_entity_list)."""
     try:
         results = await _get_client().get_states(entity_ids, instance)
+        # DD-338 B.1.b: canonical sort-before-return on entity_id ascending.
+        # format_entity_list ALSO sorts internally — handler-level sort lifts the
+        # contract from a presentation-layer accident to an auditable invariant.
+        results = sorted(results, key=lambda r: r.get("entity_id", "") or "")
         return format_states_grouped(results, fields)
     except HAError as e:
         return _error(e)
@@ -560,6 +588,8 @@ async def ha_states_by_domain(
         records, matched_total = await _get_client().get_states_by_domain(domain, instance, area, limit)
     except HAError as e:
         return _error(e)
+    # DD-338 B.1.b: canonical sort-before-return on entity_id ascending.
+    records = sorted(records, key=lambda e: e.get("entity_id", "") or "")
     latency_ms = int((time.perf_counter() - t0) * 1000)
     filtered_by: list[str] = []
     scope_label = _scope_audit_label(scope)
@@ -673,9 +703,12 @@ async def ha_statistics_list(
     instance: Annotated[str | None, Field(description="Target HA instance")] = None,
     statistic_type: Annotated[str | None, Field(description="Filter: mean or sum")] = None,
 ) -> str:
-    """List available statistic IDs and their metadata. Discover what can be queried with ha_statistics."""
+    """List available statistic IDs and their metadata. Discover what can be queried with ha_statistics.
+    Sorted by statistic_id ascending."""
     try:
         results = await _get_client().list_statistic_ids(instance, statistic_type)
+        # DD-338 B.1.b: canonical sort-before-return on statistic_id ascending.
+        results = sorted(results, key=lambda s: s.get("statistic_id", "") or "")
         return format_statistic_ids(results)
     except HAError as e:
         return _error(e)
@@ -933,9 +966,12 @@ async def ha_automations(
     instance: Annotated[str | None, Field(description="Target HA instance")] = None,
     limit: Annotated[int, Field(description="Max results")] = DEFAULT_LIMIT,
 ) -> str:
-    """List all automations with state (on/off) and last triggered time."""
+    """List all automations with state (on/off) and last triggered time. Sorted by entity_id ascending."""
     try:
         results = await _get_client().list_automations(instance, limit)
+        # DD-338 B.1.b: canonical sort-before-return on entity_id ascending
+        # (stable across friendly-name renames; entity_id is the canonical handle).
+        results = sorted(results, key=lambda a: a.get("entity_id", "") or "")
         return format_automations(results)
     except HAError as e:
         return _error(e)
