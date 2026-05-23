@@ -17,6 +17,11 @@ from fastmcp import FastMCP
 from pydantic import Field
 
 from ha_blade_mcp.client import HAClient, HAError
+from ha_blade_mcp.domain_hint import (
+    Pattern,
+    compute_domain_hint,
+    load_patterns_from_yaml,
+)
 from ha_blade_mcp.formatters import (
     format_areas,
     format_automations,
@@ -85,6 +90,146 @@ def _get_client() -> HAClient:
 def _error(e: HAError) -> str:
     """Format a client error as a user-friendly string."""
     return f"Error: {e}"
+
+
+# ---------------------------------------------------------------------------
+# DD-338 A.2.dom.c — per-record domain_hint computation
+# ---------------------------------------------------------------------------
+# Reader of the Stallari BladeConfigStore contract (Convention #23). User
+# defines patterns via the DomainConsentView UI; they land at
+# `<state-root>/blade-config/home-assistant-blade-mcp/config.yaml`. Missing
+# or malformed config ⇒ empty pattern list (Convention #22). Never raises
+# at module load; the cached `_PATTERNS` list is consulted on every
+# per-record tool invocation but recomputed only on server restart (the
+# config is rewritten through BladeConfigStore which itself signals the
+# daemon to relaunch the blade, so a fresh exec picks up the new shape).
+
+_BLADE_ID = "home-assistant-blade-mcp"
+
+
+def _state_root() -> str:
+    """Resolve the Stallari Application Support state root.
+
+    Honours `STALLARI_STATE_ROOT` (set by the test harness + the daemon
+    when running under a non-default profile) and otherwise resolves to
+    the macOS default at `~/Library/Application Support/Stallari/`.
+    """
+    override = os.environ.get("STALLARI_STATE_ROOT")
+    if override:
+        return override
+    return os.path.expanduser("~/Library/Application Support/Stallari")
+
+
+def _load_blade_config(blade_id: str) -> list[Pattern]:
+    """Load user-defined domain-hint patterns for this blade.
+
+    Resolution: `<state-root>/blade-config/<sanitized-blade-id>/config.yaml`.
+    Sanitisation lowercases and replaces `/` with `_` so a future scoped
+    blade id (e.g. `org/home-assistant-blade-mcp`) maps to a flat dir.
+    Missing file / I/O error / malformed YAML ⇒ [].
+    """
+    sanitized = blade_id.lower().replace("/", "_")
+    path = os.path.join(_state_root(), "blade-config", sanitized, "config.yaml")
+    try:
+        with open(path, encoding="utf-8") as fh:
+            return load_patterns_from_yaml(fh.read())
+    except (OSError, ValueError):
+        return []
+
+
+# Cached at module load. A blade restart (triggered when the user saves
+# patterns through DomainConsentView) re-executes this module and rebuilds
+# the cache.
+_PATTERNS: list[Pattern] = _load_blade_config(_BLADE_ID)
+
+
+def _field_projector(record: dict[str, Any], field: str) -> Any:
+    """Project a logical field name to a value out of an HA record.
+
+    Covers the per-record shapes returned by `ha_devices`, `ha_entities`,
+    `ha_states_by_domain`, and `ha_statistics`. The four tools mix
+    REST-shaped state records (`entity_id`/`state`/`attributes.*`) and
+    WebSocket-shaped registry records (`id`/`name`/`area_id`/`labels`).
+    Patterns are authored against logical names; the projector hides
+    the shape difference.
+
+    Synthesised fields:
+        entity_namespace — first segment of entity_id (`light` from
+        `light.kitchen`). Useful for "all sensors are home" rules.
+
+    Returns None for unknown fields or missing keys so
+    `compute_domain_hint` can short-circuit cleanly.
+    """
+    if field == "entity_id":
+        return record.get("entity_id") or record.get("id")
+    if field == "entity_namespace":
+        eid = record.get("entity_id")
+        if isinstance(eid, str) and "." in eid:
+            return eid.split(".", 1)[0]
+        return None
+    if field == "friendly_name":
+        attrs = record.get("attributes")
+        if isinstance(attrs, dict):
+            return attrs.get("friendly_name")
+        # Registry records carry name on the top level
+        return record.get("name") or record.get("name_by_user") or record.get("original_name")
+    if field == "area_id":
+        attrs = record.get("attributes")
+        if isinstance(attrs, dict) and attrs.get("area_id") is not None:
+            return attrs.get("area_id")
+        return record.get("area_id")
+    if field == "state":
+        return record.get("state")
+    if field == "labels":
+        return record.get("labels")
+    if field == "manufacturer":
+        return record.get("manufacturer")
+    if field == "model":
+        return record.get("model")
+    if field == "platform":
+        return record.get("platform")
+    if field == "domain":
+        # `domain` for registry entries is encoded inside entity_id
+        eid = record.get("entity_id")
+        if isinstance(eid, str) and "." in eid:
+            return eid.split(".", 1)[0]
+        return None
+    return None
+
+
+def _record_id(record: dict[str, Any]) -> str | None:
+    """Pick the canonical record identifier for the _meta.domain_hints map.
+
+    Per spec: HA canonical id is `entity_id`. Registry devices use `id`.
+    Returns None when neither is present (record is excluded from the map).
+    """
+    eid = record.get("entity_id")
+    if isinstance(eid, str):
+        return eid
+    rid = record.get("id")
+    if isinstance(rid, str):
+        return rid
+    return None
+
+
+def _domain_hints_for(records: list[dict[str, Any]]) -> dict[str, str]:
+    """Compute the `_meta.domain_hints` map for a record list.
+
+    Records with no matching pattern OR no resolvable record id are
+    omitted from the map. Empty result ⇒ caller MUST omit the
+    `domain_hints` key from the meta dict.
+    """
+    if not _PATTERNS:
+        return {}
+    out: dict[str, str] = {}
+    for record in records:
+        rid = _record_id(record)
+        if rid is None:
+            continue
+        hint = compute_domain_hint(record, _PATTERNS, _field_projector)
+        if hint is not None:
+            out[rid] = hint
+    return out
 
 
 # ---------------------------------------------------------------------------
@@ -249,12 +394,15 @@ async def ha_devices(
         filtered_by.append(f"area={area}")
     if manufacturer:
         filtered_by.append(f"manufacturer={manufacturer}")
-    meta = {
+    meta: dict[str, Any] = {
         "matched_total": matched_total,
         "returned": len(records),
         "filtered_by": filtered_by,
         "latency_ms": latency_ms,
     }
+    hints = _domain_hints_for(records)
+    if hints:
+        meta["domain_hints"] = hints
     return format_devices(records, meta=meta)
 
 
@@ -290,12 +438,15 @@ async def ha_entities(
         filtered_by.append(f"area={area}")
     if label:
         filtered_by.append(f"label={label}")
-    meta = {
+    meta: dict[str, Any] = {
         "matched_total": matched_total,
         "returned": len(records),
         "filtered_by": filtered_by,
         "latency_ms": latency_ms,
     }
+    hints = _domain_hints_for(records)
+    if hints:
+        meta["domain_hints"] = hints
     return format_entity_registry(records, meta=meta)
 
 
@@ -417,12 +568,15 @@ async def ha_states_by_domain(
     filtered_by.append(f"domain={domain}")
     if area:
         filtered_by.append(f"area={area}")
-    meta = {
+    meta: dict[str, Any] = {
         "matched_total": matched_total,
         "returned": len(records),
         "filtered_by": filtered_by,
         "latency_ms": latency_ms,
     }
+    hints = _domain_hints_for(records)
+    if hints:
+        meta["domain_hints"] = hints
     return format_states_grouped(records, fields, meta=meta)
 
 
@@ -492,12 +646,25 @@ async def ha_statistics(
         filtered_by.append(scope_label)
     filtered_by.append(f"entity_ids={len(entity_ids)}")
     filtered_by.append(f"period={period}")
-    meta = {
+    meta: dict[str, Any] = {
         "matched_total": matched_total,
         "returned": matched_total,  # no limit truncation on statistics
         "filtered_by": filtered_by,
         "latency_ms": latency_ms,
     }
+    # ha_statistics returns [{instance, statistics: {stat_id: [points]}}].
+    # Synthesise a per-stat_id pseudo-record so the same projector +
+    # pattern set apply unchanged (stat_id is typically entity-shaped).
+    if _PATTERNS:
+        stat_records: list[dict[str, Any]] = []
+        for r in records:
+            stats = r.get("statistics", {})
+            if isinstance(stats, dict):
+                for stat_id in stats.keys():
+                    stat_records.append({"entity_id": stat_id})
+        hints = _domain_hints_for(stat_records)
+        if hints:
+            meta["domain_hints"] = hints
     return format_statistics(records, meta=meta)
 
 

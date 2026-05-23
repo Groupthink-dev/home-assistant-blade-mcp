@@ -17,13 +17,19 @@ from typing import Any
 def _append_meta(body: str, meta: dict[str, Any] | None) -> str:
     """Append a DD-338 _meta envelope as a JSON-tail block after body.
 
-    Wire shape (DD-338 Phase A.1 architect amendment):
+    Wire shape (DD-338 Phase A.1 architect amendment, extended for
+    A.2.dom.c per-record domain_hints):
 
         <body>
 
-        _meta: {"matched_total": N, "returned": M, "filtered_by": [...], "latency_ms": X}
+        _meta: {"matched_total": N, "returned": M, "filtered_by": [...],
+                "latency_ms": X, "domain_hints": {"<record_id>": "<domain>", ...}}
 
-    Single line, JSON object, appended after `\\n\\n`. Assembler regex:
+    The `domain_hints` key is present only when at least one record
+    matched a user-defined Pattern (computed in server.py via
+    `domain_hint.compute_domain_hint`). Empty / all-None ⇒ key omitted
+    so the assembler need not branch on empty maps. Single line, JSON
+    object, appended after `\\n\\n`. Assembler regex:
     `\\n\\n_meta: (\\{.*\\})$`. Returns body verbatim when meta is None.
     """
     if meta is None:

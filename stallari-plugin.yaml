@@ -82,6 +82,16 @@ requires:
 
   adapter_contracts:
     - "home >= 1.0"
+
+# DD-338 A.2.dom.c — per-record domain attribution
+# Patterns ship empty; users define them via the DomainConsentView UI
+# (stallari-harness) which writes through BladeConfigStore to
+# `<state-root>/blade-config/home-assistant-blade-mcp/config.yaml`.
+# The server reads that file at module load; saved patterns activate
+# on next blade restart (triggered automatically by the consent flow).
+blade_domain_hint_patterns:
+  patterns: []
+
 conformance:
   required: "4/4"
   recommended: "5/5"
