@@ -209,10 +209,10 @@ def format_states_grouped(
 # ---------------------------------------------------------------------------
 
 
-def format_history(results: list[dict[str, Any]]) -> str:
+def format_history(results: list[dict[str, Any]], meta: dict[str, Any] | None = None) -> str:
     """Format history results as compact time series."""
     if not results:
-        return "(no history)"
+        return _append_meta("(no history)", meta)
     lines = []
     for r in results:
         inst = r.get("instance", "?")
@@ -229,7 +229,7 @@ def format_history(results: list[dict[str, Any]]) -> str:
                 if "T" in ts:
                     ts = ts.split("T")[1][:5]  # HH:MM
                 lines.append(f"{ts} | {state.get('state', '?')}")
-    return "\n".join(lines)
+    return _append_meta("\n".join(lines), meta)
 
 
 # ---------------------------------------------------------------------------
@@ -237,10 +237,10 @@ def format_history(results: list[dict[str, Any]]) -> str:
 # ---------------------------------------------------------------------------
 
 
-def format_logbook(entries: list[dict[str, Any]]) -> str:
+def format_logbook(entries: list[dict[str, Any]], meta: dict[str, Any] | None = None) -> str:
     """Format logbook entries as compact lines."""
     if not entries:
-        return "(no logbook entries)"
+        return _append_meta("(no logbook entries)", meta)
     lines = []
     for e in entries:
         ts = e.get("when", "?")
@@ -255,7 +255,7 @@ def format_logbook(entries: list[dict[str, Any]]) -> str:
         if entity_id:
             parts.append(entity_id)
         lines.append(" | ".join(parts))
-    return "\n".join(lines)
+    return _append_meta("\n".join(lines), meta)
 
 
 # ---------------------------------------------------------------------------
@@ -417,10 +417,10 @@ def format_automations(entities: list[dict[str, Any]]) -> str:
 # ---------------------------------------------------------------------------
 
 
-def format_calendar_events(events: list[dict[str, Any]]) -> str:
+def format_calendar_events(events: list[dict[str, Any]], meta: dict[str, Any] | None = None) -> str:
     """Format HA calendar events as compact lines."""
     if not events:
-        return "(no events)"
+        return _append_meta("(no events)", meta)
     lines = []
     for e in sorted(events, key=lambda x: x.get("start", {}).get("dateTime", x.get("start", {}).get("date", ""))):
         start = e.get("start", {})
@@ -441,7 +441,7 @@ def format_calendar_events(events: list[dict[str, Any]]) -> str:
         if desc:
             parts.append(f"desc={desc[:80]}")
         lines.append(" | ".join(parts))
-    return "\n".join(lines)
+    return _append_meta("\n".join(lines), meta)
 
 
 # ---------------------------------------------------------------------------
@@ -493,10 +493,10 @@ def format_statistic_ids(ids: list[dict[str, Any]]) -> str:
 # ---------------------------------------------------------------------------
 
 
-def format_search_related(results: list[dict[str, Any]]) -> str:
+def format_search_related(results: list[dict[str, Any]], meta: dict[str, Any] | None = None) -> str:
     """Format search/related results."""
     if not results:
-        return "(no results)"
+        return _append_meta("(no results)", meta)
     lines = []
     for r in results:
         inst = r.get("_instance", "?")
@@ -509,7 +509,7 @@ def format_search_related(results: list[dict[str, Any]]) -> str:
                 lines.append(f"## {item_type} ({len(items)})")
                 for item in items:
                     lines.append(f"  {item}")
-    return "\n".join(lines)
+    return _append_meta("\n".join(lines), meta)
 
 
 # ---------------------------------------------------------------------------

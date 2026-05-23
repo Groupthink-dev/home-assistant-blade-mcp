@@ -503,3 +503,203 @@ class TestScopeCheckUnit:
     def test_unknown_passes_through(self) -> None:
         # Defensive — DD-278 vocabulary may grow
         assert server_module._scope_check("brand-new-scope-2027") is None
+
+
+# ---------------------------------------------------------------------------
+# DD-338 Phase C Wave 2 — audit_surface envelope coverage
+# (ha_search, ha_history, ha_logbook, ha_calendar_events, ha_states)
+# ---------------------------------------------------------------------------
+
+
+class TestHaSearchMeta:
+    @pytest.mark.asyncio
+    async def test_emits_meta_envelope(self, ha_env: None) -> None:
+        with patch.object(server_module, "_get_client") as mock_gc:
+            mock_client = AsyncMock()
+            mock_client.search_related.return_value = [
+                {
+                    "_instance": "default",
+                    "entity": ["light.a", "light.b"],
+                    "device": ["dev1"],
+                }
+            ]
+            mock_gc.return_value = mock_client
+            result = await server_module.ha_search(item_type="entity", item_id="light.living_room")
+            meta = _parse_meta(result)
+            assert meta["matched_total"] == 3
+            assert meta["returned"] == 3
+            assert "item_type=entity" in meta["filtered_by"]
+            assert "item_id=light.living_room" in meta["filtered_by"]
+            assert isinstance(meta["latency_ms"], int)
+
+    @pytest.mark.asyncio
+    async def test_no_results_still_emits_meta(self, ha_env: None) -> None:
+        with patch.object(server_module, "_get_client") as mock_gc:
+            mock_client = AsyncMock()
+            mock_client.search_related.return_value = [{"_instance": "default"}]
+            mock_gc.return_value = mock_client
+            result = await server_module.ha_search(item_type="device", item_id="abc123")
+            meta = _parse_meta(result)
+            assert meta["matched_total"] == 0
+            assert meta["returned"] == 0
+            assert "item_type=device" in meta["filtered_by"]
+
+
+class TestHaHistoryMeta:
+    @pytest.mark.asyncio
+    async def test_emits_meta_envelope(self, ha_env: None) -> None:
+        with patch.object(server_module, "_get_client") as mock_gc:
+            mock_client = AsyncMock()
+            mock_client.get_history.return_value = [
+                {
+                    "instance": "default",
+                    "history": [
+                        [
+                            {"entity_id": "light.a", "state": "on", "last_changed": "2026-05-01T10:00:00"},
+                            {"entity_id": "light.a", "state": "off", "last_changed": "2026-05-01T11:00:00"},
+                        ],
+                        [
+                            {"entity_id": "light.b", "state": "on", "last_changed": "2026-05-01T10:30:00"},
+                        ],
+                    ],
+                }
+            ]
+            mock_gc.return_value = mock_client
+            result = await server_module.ha_history(
+                entity_ids=["light.a", "light.b"],
+                start="2026-05-01T00:00:00",
+                end="2026-05-02T00:00:00",
+                minimal=True,
+            )
+            meta = _parse_meta(result)
+            assert meta["matched_total"] == 3  # total state-change records
+            assert meta["returned"] == 3
+            assert "entity_ids=2" in meta["filtered_by"]
+            assert "time_range=2026-05-01T00:00:00..2026-05-02T00:00:00" in meta["filtered_by"]
+            assert "minimal=true" in meta["filtered_by"]
+
+    @pytest.mark.asyncio
+    async def test_default_end_emits_meta(self, ha_env: None) -> None:
+        with patch.object(server_module, "_get_client") as mock_gc:
+            mock_client = AsyncMock()
+            mock_client.get_history.return_value = []
+            mock_gc.return_value = mock_client
+            result = await server_module.ha_history(entity_ids=["sensor.x"], start="2026-05-01T00:00:00")
+            meta = _parse_meta(result)
+            assert meta["returned"] == 0
+            assert any("time_range=2026-05-01T00:00:00.." in f for f in meta["filtered_by"])
+
+
+class TestHaLogbookMeta:
+    @pytest.mark.asyncio
+    async def test_emits_meta_envelope(self, ha_env: None) -> None:
+        with patch.object(server_module, "_get_client") as mock_gc:
+            mock_client = AsyncMock()
+            mock_client.get_logbook.return_value = [
+                {"when": "2026-05-01T10:00:00", "name": "Light A", "message": "turned on"},
+                {"when": "2026-05-01T11:00:00", "name": "Light A", "message": "turned off"},
+            ]
+            mock_gc.return_value = mock_client
+            result = await server_module.ha_logbook(
+                start="2026-05-01T00:00:00",
+                end="2026-05-02T00:00:00",
+                entity_id="light.a",
+                limit=50,
+            )
+            meta = _parse_meta(result)
+            assert meta["matched_total"] == 2
+            assert meta["returned"] == 2
+            assert "time_range=2026-05-01T00:00:00..2026-05-02T00:00:00" in meta["filtered_by"]
+            assert "entity_id=light.a" in meta["filtered_by"]
+            assert "limit=50" in meta["filtered_by"]
+
+    @pytest.mark.asyncio
+    async def test_no_entity_filter_omitted_from_envelope(self, ha_env: None) -> None:
+        with patch.object(server_module, "_get_client") as mock_gc:
+            mock_client = AsyncMock()
+            mock_client.get_logbook.return_value = []
+            mock_gc.return_value = mock_client
+            result = await server_module.ha_logbook(start="2026-05-01T00:00:00")
+            meta = _parse_meta(result)
+            assert not any(f.startswith("entity_id=") for f in meta["filtered_by"])
+
+
+class TestHaCalendarEventsMeta:
+    @pytest.mark.asyncio
+    async def test_emits_meta_envelope(self, ha_env: None) -> None:
+        with patch.object(server_module, "_get_client") as mock_gc:
+            mock_client = AsyncMock()
+            mock_client.get_calendar_events.return_value = [
+                {
+                    "summary": "Meeting",
+                    "start": {"dateTime": "2026-05-01T10:00:00"},
+                    "end": {"dateTime": "2026-05-01T11:00:00"},
+                },
+                {
+                    "summary": "Lunch",
+                    "start": {"dateTime": "2026-05-01T12:00:00"},
+                    "end": {"dateTime": "2026-05-01T13:00:00"},
+                },
+            ]
+            mock_gc.return_value = mock_client
+            result = await server_module.ha_calendar_events(
+                entity_id="calendar.work",
+                start="2026-05-01T00:00:00",
+                end="2026-05-02T00:00:00",
+            )
+            meta = _parse_meta(result)
+            assert meta["matched_total"] == 2
+            assert meta["returned"] == 2
+            assert "entity_id=calendar.work" in meta["filtered_by"]
+            assert "time_range=2026-05-01T00:00:00..2026-05-02T00:00:00" in meta["filtered_by"]
+
+
+class TestHaStatesMeta:
+    @pytest.mark.asyncio
+    async def test_emits_meta_envelope(self, ha_env: None) -> None:
+        with patch.object(server_module, "_get_client") as mock_gc:
+            mock_client = AsyncMock()
+            mock_client.get_states.return_value = [
+                make_light_state("light.a"),
+                make_light_state("light.b"),
+            ]
+            mock_gc.return_value = mock_client
+            result = await server_module.ha_states(entity_ids=["light.a", "light.b"])
+            meta = _parse_meta(result)
+            assert meta["matched_total"] == 2
+            assert meta["returned"] == 2
+            assert "entity_ids=2" in meta["filtered_by"]
+            assert "redactions" not in meta
+
+    @pytest.mark.asyncio
+    async def test_missing_ids_surface_as_redactions(self, ha_env: None) -> None:
+        with patch.object(server_module, "_get_client") as mock_gc:
+            mock_client = AsyncMock()
+            # Request 3 but client only returns 1
+            mock_client.get_states.return_value = [make_light_state("light.a")]
+            mock_gc.return_value = mock_client
+            result = await server_module.ha_states(entity_ids=["light.a", "light.missing1", "light.missing2"])
+            meta = _parse_meta(result)
+            assert meta["matched_total"] == 3
+            assert meta["returned"] == 1
+            assert "redactions" in meta
+            assert "entity_id=light.missing1_not_found" in meta["redactions"]
+            assert "entity_id=light.missing2_not_found" in meta["redactions"]
+
+
+# ---------------------------------------------------------------------------
+# DD-338 Phase C Wave 2 — ha_search scope_filtering: server-side honesty
+# (OQ-1 ratification: ha_search calls the underlying search/related WS endpoint
+#  with explicit item_type + item_id; no over-fetch + client-side filter.)
+# ---------------------------------------------------------------------------
+
+
+class TestHaSearchServerSideHonesty:
+    @pytest.mark.asyncio
+    async def test_passes_args_verbatim_to_client(self, ha_env: None) -> None:
+        with patch.object(server_module, "_get_client") as mock_gc:
+            mock_client = AsyncMock()
+            mock_client.search_related.return_value = [{"_instance": "default"}]
+            mock_gc.return_value = mock_client
+            await server_module.ha_search(item_type="entity", item_id="light.x")
+            mock_client.search_related.assert_called_once_with("entity", "light.x", None)
