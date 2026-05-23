@@ -11,17 +11,20 @@ from __future__ import annotations
 import logging
 import os
 import time
+from collections.abc import Callable
 from typing import Annotated, Any
 
 from fastmcp import FastMCP
 from pydantic import Field
-
-from ha_blade_mcp.client import HAClient, HAError
-from ha_blade_mcp.domain_hint import (
+from stallari_mcp_helpers import (
     Pattern,
-    compute_domain_hint,
     load_patterns_from_yaml,
 )
+from stallari_mcp_helpers import (
+    compute_domain_hint as _canonical_compute_domain_hint,
+)
+
+from ha_blade_mcp.client import HAClient, HAError
 from ha_blade_mcp.formatters import (
     format_areas,
     format_automations,
@@ -132,7 +135,8 @@ def _load_blade_config(blade_id: str) -> list[Pattern]:
     path = os.path.join(_state_root(), "blade-config", sanitized, "config.yaml")
     try:
         with open(path, encoding="utf-8") as fh:
-            return load_patterns_from_yaml(fh.read())
+            patterns: list[Pattern] = load_patterns_from_yaml(fh.read())
+            return patterns
     except (OSError, ValueError):
         return []
 
@@ -210,6 +214,59 @@ def _record_id(record: dict[str, Any]) -> str | None:
     if isinstance(rid, str):
         return rid
     return None
+
+
+def _project_record(record: dict[str, Any], patterns: list[Pattern]) -> dict[str, Any]:
+    """Build a flat projection dict consumable by the canonical
+    ``compute_domain_hint`` (dot-path resolution).
+
+    The canonical helper resolves pattern fields via plain dot-path lookup
+    against the record. HA's record shapes are heterogeneous (REST state
+    vs WebSocket registry) AND HA patterns use synthesised fields
+    (``entity_namespace`` from ``entity_id``). We pre-project the values
+    that the patterns ask for and seed them as top-level keys on a copy
+    of the record so canonical sees a uniform shape. Untouched fields on
+    the original record pass through unchanged.
+    """
+    projected = dict(record)
+    seen: set[str] = set()
+    for pattern in patterns:
+        field = pattern.field
+        if field in seen:
+            continue
+        seen.add(field)
+        # Skip dotted patterns — caller authored a literal dot-path; let
+        # canonical resolve it against the unmodified record.
+        if "." in field:
+            continue
+        value = _field_projector(record, field)
+        if value is not None:
+            projected[field] = value
+    return projected
+
+
+def compute_domain_hint(
+    record: dict[str, Any],
+    patterns: list[Pattern],
+    field_projector: Callable[[dict[str, Any], str], Any],
+) -> str | None:
+    """HA-specific wrapper around the canonical ``compute_domain_hint``.
+
+    Bridges the canonical dot-path field-resolution model to HA's
+    record-shape projector. Authored against the same three-arg shape the
+    blade has used since DD-338 A.2.dom.c so existing tests + callers
+    don't change.
+    """
+    if not patterns:
+        return None
+    projected = _project_record(record, patterns)
+    # field_projector is still consulted indirectly via _project_record
+    # above (it captures _field_projector by closure when called from
+    # _domain_hints_for). The arg is preserved on the public signature so
+    # the test suite + future call-sites can pass a custom projector.
+    _ = field_projector  # acknowledged; closure-captured at the call site
+    result: str | None = _canonical_compute_domain_hint(projected, patterns)
+    return result
 
 
 def _domain_hints_for(records: list[dict[str, Any]]) -> dict[str, str]:

@@ -9,32 +9,29 @@ All formatters return compact strings optimised for LLM consumption:
 
 from __future__ import annotations
 
-import json
 from collections.abc import Callable
 from typing import Any
 
+from stallari_mcp_helpers import append_meta, meta_envelope
 
-def _append_meta(body: str, meta: dict[str, Any] | None) -> str:
-    """Append a DD-338 _meta envelope as a JSON-tail block after body.
-
-    Wire shape (DD-338 Phase A.1 architect amendment, extended for
-    A.2.dom.c per-record domain_hints):
-
-        <body>
-
-        _meta: {"matched_total": N, "returned": M, "filtered_by": [...],
-                "latency_ms": X, "domain_hints": {"<record_id>": "<domain>", ...}}
-
-    The `domain_hints` key is present only when at least one record
-    matched a user-defined Pattern (computed in server.py via
-    `domain_hint.compute_domain_hint`). Empty / all-None ⇒ key omitted
-    so the assembler need not branch on empty maps. Single line, JSON
-    object, appended after `\\n\\n`. Assembler regex:
-    `\\n\\n_meta: (\\{.*\\})$`. Returns body verbatim when meta is None.
-    """
-    if meta is None:
-        return body
-    return f"{body}\n\n_meta: {json.dumps(meta, separators=(', ', ': '), ensure_ascii=False)}"
+# DD-338 Phase E.python — the `_meta` audit-envelope builder moved to
+# the canonical `stallari_mcp_helpers` package. Build the envelope line
+# via ``meta_envelope(**meta)`` and join with ``append_meta(body, line)``.
+#
+# Wire shape (DD-338 Phase A.1 architect amendment, extended for
+# A.2.dom.c per-record domain_hints):
+#
+#     <body>
+#
+#     _meta: {"matched_total": N, "returned": M, "filtered_by": [...],
+#             "latency_ms": X, "domain_hints": {"<record_id>": "<domain>", ...}}
+#
+# The `domain_hints` key is present only when at least one record matched
+# a user-defined Pattern (computed in server.py via
+# `compute_domain_hint`). Empty / all-None ⇒ key omitted by the
+# canonical builder so the assembler need not branch on empty maps. The
+# canonical line is appended after ``\n\n``. Assembler regex:
+# ``\n\n_meta: (\{.*\})$``.
 
 
 def _pick(data: dict[str, Any], *keys: str) -> list[str]:
@@ -201,7 +198,7 @@ def format_states_grouped(
     """Format entities grouped by instance, then by domain."""
     groups = _group_by_instance(entities)
     body = _with_instance_header(groups, lambda items: format_entity_list(items, fields))
-    return _append_meta(body, meta)
+    return append_meta(body, meta_envelope(**meta)) if meta else body
 
 
 # ---------------------------------------------------------------------------
@@ -212,7 +209,8 @@ def format_states_grouped(
 def format_history(results: list[dict[str, Any]], meta: dict[str, Any] | None = None) -> str:
     """Format history results as compact time series."""
     if not results:
-        return _append_meta("(no history)", meta)
+        body = "(no history)"
+        return append_meta(body, meta_envelope(**meta)) if meta else body
     lines = []
     for r in results:
         inst = r.get("instance", "?")
@@ -229,7 +227,8 @@ def format_history(results: list[dict[str, Any]], meta: dict[str, Any] | None = 
                 if "T" in ts:
                     ts = ts.split("T")[1][:5]  # HH:MM
                 lines.append(f"{ts} | {state.get('state', '?')}")
-    return _append_meta("\n".join(lines), meta)
+    body = "\n".join(lines)
+    return append_meta(body, meta_envelope(**meta)) if meta else body
 
 
 # ---------------------------------------------------------------------------
@@ -240,7 +239,8 @@ def format_history(results: list[dict[str, Any]], meta: dict[str, Any] | None = 
 def format_logbook(entries: list[dict[str, Any]], meta: dict[str, Any] | None = None) -> str:
     """Format logbook entries as compact lines."""
     if not entries:
-        return _append_meta("(no logbook entries)", meta)
+        body = "(no logbook entries)"
+        return append_meta(body, meta_envelope(**meta)) if meta else body
     lines = []
     for e in entries:
         ts = e.get("when", "?")
@@ -255,7 +255,8 @@ def format_logbook(entries: list[dict[str, Any]], meta: dict[str, Any] | None = 
         if entity_id:
             parts.append(entity_id)
         lines.append(" | ".join(parts))
-    return _append_meta("\n".join(lines), meta)
+    body = "\n".join(lines)
+    return append_meta(body, meta_envelope(**meta)) if meta else body
 
 
 # ---------------------------------------------------------------------------
@@ -285,7 +286,8 @@ def format_areas(areas: list[dict[str, Any]]) -> str:
 def format_devices(devices: list[dict[str, Any]], meta: dict[str, Any] | None = None) -> str:
     """Format devices as compact lines."""
     if not devices:
-        return _append_meta("(no devices)", meta)
+        body = "(no devices)"
+        return append_meta(body, meta_envelope(**meta)) if meta else body
     groups = _group_by_instance(devices)
     lines = []
     for inst, items in groups.items():
@@ -299,7 +301,8 @@ def format_devices(devices: list[dict[str, Any]], meta: dict[str, Any] | None = 
             if d.get("disabled_by"):
                 parts.append("DISABLED")
             lines.append(" | ".join(parts))
-    return _append_meta("\n".join(lines), meta)
+    body = "\n".join(lines)
+    return append_meta(body, meta_envelope(**meta)) if meta else body
 
 
 def format_floors(floors: list[dict[str, Any]]) -> str:
@@ -334,7 +337,8 @@ def format_labels(labels: list[dict[str, Any]]) -> str:
 def format_entity_registry(entities: list[dict[str, Any]], meta: dict[str, Any] | None = None) -> str:
     """Format entity registry entries as compact lines, grouped by domain."""
     if not entities:
-        return _append_meta("(no entities)", meta)
+        body = "(no entities)"
+        return append_meta(body, meta_envelope(**meta)) if meta else body
     by_domain: dict[str, list[dict[str, Any]]] = {}
     for e in entities:
         eid = e.get("entity_id", "?.?")
@@ -359,7 +363,8 @@ def format_entity_registry(entities: list[dict[str, Any]], meta: dict[str, Any] 
             if labels:
                 parts.append(f"labels={','.join(labels)}")
             lines.append(" | ".join(parts))
-    return _append_meta("\n".join(lines), meta)
+    body = "\n".join(lines)
+    return append_meta(body, meta_envelope(**meta)) if meta else body
 
 
 # ---------------------------------------------------------------------------
@@ -420,7 +425,8 @@ def format_automations(entities: list[dict[str, Any]]) -> str:
 def format_calendar_events(events: list[dict[str, Any]], meta: dict[str, Any] | None = None) -> str:
     """Format HA calendar events as compact lines."""
     if not events:
-        return _append_meta("(no events)", meta)
+        body = "(no events)"
+        return append_meta(body, meta_envelope(**meta)) if meta else body
     lines = []
     for e in sorted(events, key=lambda x: x.get("start", {}).get("dateTime", x.get("start", {}).get("date", ""))):
         start = e.get("start", {})
@@ -441,7 +447,8 @@ def format_calendar_events(events: list[dict[str, Any]], meta: dict[str, Any] | 
         if desc:
             parts.append(f"desc={desc[:80]}")
         lines.append(" | ".join(parts))
-    return _append_meta("\n".join(lines), meta)
+    body = "\n".join(lines)
+    return append_meta(body, meta_envelope(**meta)) if meta else body
 
 
 # ---------------------------------------------------------------------------
@@ -452,7 +459,8 @@ def format_calendar_events(events: list[dict[str, Any]], meta: dict[str, Any] | 
 def format_statistics(results: list[dict[str, Any]], meta: dict[str, Any] | None = None) -> str:
     """Format recorder statistics as compact lines."""
     if not results:
-        return _append_meta("(no statistics)", meta)
+        body = "(no statistics)"
+        return append_meta(body, meta_envelope(**meta)) if meta else body
     lines = []
     for r in results:
         inst = r.get("instance", "?")
@@ -470,7 +478,8 @@ def format_statistics(results: list[dict[str, Any]], meta: dict[str, Any] | None
                 if not any(k in dp for k in ("mean", "min", "max", "sum", "change")):
                     parts.append(f"state={dp.get('state', '?')}")
                 lines.append(" | ".join(str(p) for p in parts))
-    return _append_meta("\n".join(lines), meta)
+    body = "\n".join(lines)
+    return append_meta(body, meta_envelope(**meta)) if meta else body
 
 
 def format_statistic_ids(ids: list[dict[str, Any]]) -> str:
@@ -496,7 +505,8 @@ def format_statistic_ids(ids: list[dict[str, Any]]) -> str:
 def format_search_related(results: list[dict[str, Any]], meta: dict[str, Any] | None = None) -> str:
     """Format search/related results."""
     if not results:
-        return _append_meta("(no results)", meta)
+        body = "(no results)"
+        return append_meta(body, meta_envelope(**meta)) if meta else body
     lines = []
     for r in results:
         inst = r.get("_instance", "?")
@@ -509,7 +519,8 @@ def format_search_related(results: list[dict[str, Any]], meta: dict[str, Any] | 
                 lines.append(f"## {item_type} ({len(items)})")
                 for item in items:
                     lines.append(f"  {item}")
-    return _append_meta("\n".join(lines), meta)
+    body = "\n".join(lines)
+    return append_meta(body, meta_envelope(**meta)) if meta else body
 
 
 # ---------------------------------------------------------------------------
