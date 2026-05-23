@@ -59,9 +59,7 @@ class TestComputeDomainHint:
         assert compute_domain_hint(record, patterns, _ha_projector) == "home"
 
     def test_contains_match_on_friendly_name(self) -> None:
-        patterns = [
-            Pattern(field="friendly_name", op="contains", value="Kitchen", domain="home")
-        ]
+        patterns = [Pattern(field="friendly_name", op="contains", value="Kitchen", domain="home")]
         record = {
             "entity_id": "sensor.zwave_node_temp_1",
             "attributes": {"friendly_name": "Kitchen Temperature"},
