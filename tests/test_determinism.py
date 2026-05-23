@@ -21,7 +21,6 @@ from tests.conftest import (
     make_light_state,
 )
 
-
 N_RUNS = 5
 
 
@@ -261,7 +260,9 @@ class TestHaSearchDeterministic:
         for _ in range(N_RUNS):
             with patch.object(server_module, "_get_client") as mock_gc:
                 mock_client = AsyncMock()
-                mock_client.search_related.return_value = [dict(r, **{k: list(v) if isinstance(v, list) else v for k, v in r.items()}) for r in fixture]
+                mock_client.search_related.return_value = [
+                    dict(r, **{k: list(v) if isinstance(v, list) else v for k, v in r.items()}) for r in fixture
+                ]
                 mock_gc.return_value = mock_client
                 outputs.append(await server_module.ha_search("entity", "light.living_room"))
         _byte_equal(outputs)
@@ -312,9 +313,7 @@ class TestHaServicesListDeterministic:
         for _ in range(N_RUNS):
             with patch.object(server_module, "_get_client") as mock_gc:
                 mock_client = AsyncMock()
-                mock_client.list_services.return_value = [
-                    {**fixture[0], "services": list(fixture[0]["services"])}
-                ]
+                mock_client.list_services.return_value = [{**fixture[0], "services": list(fixture[0]["services"])}]
                 mock_gc.return_value = mock_client
                 outputs.append(await server_module.ha_services_list())
         _byte_equal(outputs)
