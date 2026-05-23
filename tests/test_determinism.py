@@ -461,3 +461,121 @@ class TestHaAutomationsDeterministic:
             mock_gc.return_value = mock_client
             out = await server_module.ha_automations()
         assert out.index("automation.aaa") < out.index("automation.zzz")
+
+
+# ---------------------------------------------------------------------------
+# DD-338 Phase C Wave 2 — N=3 byte-equal determinism on _meta-emitting tools
+# (latency_ms varies per call and is stripped before comparison)
+# ---------------------------------------------------------------------------
+
+
+def _strip_latency(result: str) -> str:
+    """Strip the latency_ms field from the trailing _meta envelope for byte-equal compare."""
+    import json
+    import re
+
+    match = re.search(r"\n\n_meta: (\{.*\})$", result, flags=re.DOTALL)
+    if match is None:
+        return result
+    meta = json.loads(match.group(1))
+    meta.pop("latency_ms", None)
+    body = result[: match.start()]
+    return f"{body}\n\n_meta: {json.dumps(meta, separators=(', ', ': '), ensure_ascii=False)}"
+
+
+class TestPhaseCWave2DeterministicMeta:
+    """N=3 byte-equal determinism harness for Phase C Wave 2 _meta-emitting tools."""
+
+    @pytest.mark.asyncio
+    async def test_ha_search_n3(self, ha_env: None) -> None:
+        fixture = {
+            "_instance": "default",
+            "entity": ["light.b", "light.a"],
+            "device": ["dev1"],
+        }
+        outputs: list[str] = []
+        for _ in range(3):
+            with patch.object(server_module, "_get_client") as mock_gc:
+                mock_client = AsyncMock()
+                mock_client.search_related.return_value = [dict(fixture)]
+                mock_gc.return_value = mock_client
+                outputs.append(_strip_latency(await server_module.ha_search(item_type="entity", item_id="light.x")))
+        _byte_equal(outputs)
+
+    @pytest.mark.asyncio
+    async def test_ha_history_n3(self, ha_env: None) -> None:
+        fixture = [
+            {
+                "instance": "default",
+                "history": [[{"entity_id": "sensor.x", "state": "1", "last_changed": "2026-05-01T10:00:00"}]],
+            }
+        ]
+        outputs: list[str] = []
+        for _ in range(3):
+            with patch.object(server_module, "_get_client") as mock_gc:
+                mock_client = AsyncMock()
+                mock_client.get_history.return_value = list(fixture)
+                mock_gc.return_value = mock_client
+                outputs.append(
+                    _strip_latency(
+                        await server_module.ha_history(
+                            entity_ids=["sensor.x"],
+                            start="2026-05-01T00:00:00",
+                            end="2026-05-02T00:00:00",
+                        )
+                    )
+                )
+        _byte_equal(outputs)
+
+    @pytest.mark.asyncio
+    async def test_ha_logbook_n3(self, ha_env: None) -> None:
+        fixture = [
+            {"when": "2026-05-01T10:00:00", "name": "A", "message": "evt1"},
+            {"when": "2026-05-01T11:00:00", "name": "B", "message": "evt2"},
+        ]
+        outputs: list[str] = []
+        for _ in range(3):
+            with patch.object(server_module, "_get_client") as mock_gc:
+                mock_client = AsyncMock()
+                mock_client.get_logbook.return_value = list(fixture)
+                mock_gc.return_value = mock_client
+                outputs.append(
+                    _strip_latency(
+                        await server_module.ha_logbook(start="2026-05-01T00:00:00", end="2026-05-02T00:00:00")
+                    )
+                )
+        _byte_equal(outputs)
+
+    @pytest.mark.asyncio
+    async def test_ha_calendar_events_n3(self, ha_env: None) -> None:
+        fixture = [
+            {"summary": "M1", "start": {"dateTime": "2026-05-01T10:00:00"}, "end": {"dateTime": "2026-05-01T11:00:00"}},
+        ]
+        outputs: list[str] = []
+        for _ in range(3):
+            with patch.object(server_module, "_get_client") as mock_gc:
+                mock_client = AsyncMock()
+                mock_client.get_calendar_events.return_value = list(fixture)
+                mock_gc.return_value = mock_client
+                outputs.append(
+                    _strip_latency(
+                        await server_module.ha_calendar_events(
+                            entity_id="calendar.w",
+                            start="2026-05-01T00:00:00",
+                            end="2026-05-02T00:00:00",
+                        )
+                    )
+                )
+        _byte_equal(outputs)
+
+    @pytest.mark.asyncio
+    async def test_ha_states_n3(self, ha_env: None) -> None:
+        fixture = [make_light_state("light.a"), make_light_state("light.b")]
+        outputs: list[str] = []
+        for _ in range(3):
+            with patch.object(server_module, "_get_client") as mock_gc:
+                mock_client = AsyncMock()
+                mock_client.get_states.return_value = list(fixture)
+                mock_gc.return_value = mock_client
+                outputs.append(_strip_latency(await server_module.ha_states(entity_ids=["light.a", "light.b"])))
+        _byte_equal(outputs)

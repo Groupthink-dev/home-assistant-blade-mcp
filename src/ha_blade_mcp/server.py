@@ -495,20 +495,35 @@ async def ha_search(
 ) -> str:
     """Find related entities, devices, areas, and automations for a given item. Graph traversal.
     Outer item-type traversal preserves upstream relevance order; each per-item-type list is sorted ascending."""
+    t0 = time.perf_counter()
     try:
         results = await _get_client().search_related(item_type, item_id, instance)
-        # DD-338 B.1.b: sort inner per-item-type lists ascending while preserving
-        # the outer item-type iteration order (relevance signal from upstream).
-        for r in results:
-            for k in list(r.keys()):
-                if k.startswith("_"):
-                    continue
-                v = r.get(k)
-                if isinstance(v, list):
-                    r[k] = sorted(v, key=lambda x: str(x) if x is not None else "")
-        return format_search_related(results)
     except HAError as e:
         return _error(e)
+    # DD-338 B.1.b: sort inner per-item-type lists ascending while preserving
+    # the outer item-type iteration order (relevance signal from upstream).
+    for r in results:
+        for k in list(r.keys()):
+            if k.startswith("_"):
+                continue
+            v = r.get(k)
+            if isinstance(v, list):
+                r[k] = sorted(v, key=lambda x: str(x) if x is not None else "")
+    latency_ms = int((time.perf_counter() - t0) * 1000)
+    # DD-338 Phase C Wave 2: structured audit envelope. The HA /api/search/related
+    # endpoint returns only the related-graph for the (item_type, item_id) seed;
+    # all discrimination is server-side. matched_total = returned (the upstream
+    # endpoint is a point query — no over-fetch + post-filter).
+    total_records = sum(
+        len(v) if isinstance(v, list) else 0 for r in results for k, v in r.items() if not k.startswith("_")
+    )
+    meta: dict[str, Any] = {
+        "matched_total": total_records,
+        "returned": total_records,
+        "filtered_by": [f"item_type={item_type}", f"item_id={item_id}"],
+        "latency_ms": latency_ms,
+    }
+    return format_search_related(results, meta=meta)
 
 
 @mcp.tool()
@@ -556,15 +571,30 @@ async def ha_states(
 ) -> str:
     """Get states for multiple entities in one call. More efficient than repeated ha_state calls.
     Returned entities sorted by entity_id ascending (also upheld by format_entity_list)."""
+    t0 = time.perf_counter()
     try:
         results = await _get_client().get_states(entity_ids, instance)
-        # DD-338 B.1.b: canonical sort-before-return on entity_id ascending.
-        # format_entity_list ALSO sorts internally — handler-level sort lifts the
-        # contract from a presentation-layer accident to an auditable invariant.
-        results = sorted(results, key=lambda r: r.get("entity_id", "") or "")
-        return format_states_grouped(results, fields)
     except HAError as e:
         return _error(e)
+    # DD-338 B.1.b: canonical sort-before-return on entity_id ascending.
+    # format_entity_list ALSO sorts internally — handler-level sort lifts the
+    # contract from a presentation-layer accident to an auditable invariant.
+    results = sorted(results, key=lambda r: r.get("entity_id", "") or "")
+    latency_ms = int((time.perf_counter() - t0) * 1000)
+    # DD-338 Phase C Wave 2: entity_ids IS server-side discrimination on the
+    # record set; matched_total = len(entity_ids) (the requested set), returned
+    # = len(results) (HA-returned subset). Missing IDs surface as redactions.
+    returned_ids = {r.get("entity_id", "") for r in results}
+    missing = [eid for eid in entity_ids if eid not in returned_ids]
+    meta: dict[str, Any] = {
+        "matched_total": len(entity_ids),
+        "returned": len(results),
+        "filtered_by": [f"entity_ids={len(entity_ids)}"],
+        "latency_ms": latency_ms,
+    }
+    if missing:
+        meta["redactions"] = [f"entity_id={eid}_not_found" for eid in missing]
+    return format_states_grouped(results, fields, meta=meta)
 
 
 @mcp.tool()
@@ -619,11 +649,27 @@ async def ha_history(
     minimal: Annotated[bool, Field(description="Minimal response (state changes only)")] = True,
 ) -> str:
     """State change history for entities in a time range. Use minimal=true (default) for token efficiency."""
+    t0 = time.perf_counter()
     try:
         results = await _get_client().get_history(entity_ids, start, end, instance, minimal)
-        return format_history(results)
     except HAError as e:
         return _error(e)
+    latency_ms = int((time.perf_counter() - t0) * 1000)
+    # DD-338 Phase C Wave 2: structured envelope. HA applies the time-range +
+    # entity filter server-side; matched_total = returned (no over-fetch).
+    total_changes = sum(len(eh) for r in results for eh in (r.get("history") or []) if isinstance(eh, list))
+    time_range = f"{start}..{end}" if end else f"{start}.."
+    meta: dict[str, Any] = {
+        "matched_total": total_changes,
+        "returned": total_changes,
+        "filtered_by": [
+            f"entity_ids={len(entity_ids)}",
+            f"time_range={time_range}",
+            f"minimal={str(minimal).lower()}",
+        ],
+        "latency_ms": latency_ms,
+    }
+    return format_history(results, meta=meta)
 
 
 @mcp.tool()
@@ -635,11 +681,25 @@ async def ha_logbook(
     limit: Annotated[int, Field(description="Max entries")] = DEFAULT_LIMIT,
 ) -> str:
     """Logbook entries for a time range. Human-readable event descriptions."""
+    t0 = time.perf_counter()
     try:
         results = await _get_client().get_logbook(start, end, entity_id, instance, limit)
-        return format_logbook(results)
     except HAError as e:
         return _error(e)
+    latency_ms = int((time.perf_counter() - t0) * 1000)
+    # DD-338 Phase C Wave 2: HA server applies time-range + entity filter +
+    # limit. matched_total == returned (no over-fetch signal available).
+    time_range = f"{start}..{end}" if end else f"{start}.."
+    filtered_by = [f"time_range={time_range}", f"limit={limit}"]
+    if entity_id:
+        filtered_by.insert(1, f"entity_id={entity_id}")
+    meta: dict[str, Any] = {
+        "matched_total": len(results),
+        "returned": len(results),
+        "filtered_by": filtered_by,
+        "latency_ms": latency_ms,
+    }
+    return format_logbook(results, meta=meta)
 
 
 # ===========================================================================
@@ -722,11 +782,20 @@ async def ha_calendar_events(
     instance: Annotated[str | None, Field(description="Target HA instance")] = None,
 ) -> str:
     """Get events from a Home Assistant calendar entity in a time range."""
+    t0 = time.perf_counter()
     try:
         results = await _get_client().get_calendar_events(entity_id, start, end, instance)
-        return format_calendar_events(results)
     except HAError as e:
         return _error(e)
+    latency_ms = int((time.perf_counter() - t0) * 1000)
+    # DD-338 Phase C Wave 2: HA applies entity + time-range filter server-side.
+    meta: dict[str, Any] = {
+        "matched_total": len(results),
+        "returned": len(results),
+        "filtered_by": [f"entity_id={entity_id}", f"time_range={start}..{end}"],
+        "latency_ms": latency_ms,
+    }
+    return format_calendar_events(results, meta=meta)
 
 
 # ===========================================================================
