@@ -669,7 +669,10 @@ class TestHaStatesMeta:
             assert meta["matched_total"] == 2
             assert meta["returned"] == 2
             assert "entity_ids=2" in meta["filtered_by"]
-            assert "redactions" not in meta
+            # DD-338 Phase E.python — canonical `meta_envelope` always emits
+            # `redactions: []` (empty list when no redactions present) and
+            # `next_cursor: null`. The "absent when empty" semantic is gone.
+            assert meta["redactions"] == []
 
     @pytest.mark.asyncio
     async def test_missing_ids_surface_as_redactions(self, ha_env: None) -> None:

@@ -1,16 +1,21 @@
-"""Unit tests for DD-338 A.2.dom.c per-record domain_hint computation."""
+"""Unit tests for DD-338 A.2.dom.c per-record domain_hint computation.
+
+DD-338 Phase E.python — `Pattern` + `load_patterns_from_yaml` now ship from
+the canonical `stallari_mcp_helpers` package. HA's three-arg
+`compute_domain_hint(record, patterns, projector)` shape is preserved as
+a thin wrapper around the canonical two-arg helper — see `server.py`.
+The wrapper is mirrored here as a local test fixture so the test stays
+independent of the FastMCP boot path.
+"""
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from typing import Any
 
 import pytest
-
-from ha_blade_mcp.domain_hint import (
-    Pattern,
-    compute_domain_hint,
-    load_patterns_from_yaml,
-)
+from stallari_mcp_helpers import Pattern, load_patterns_from_yaml
+from stallari_mcp_helpers import compute_domain_hint as _canonical_compute_domain_hint
 
 
 def _ha_projector(record: dict[str, Any], field: str) -> Any:
@@ -41,6 +46,33 @@ def _ha_projector(record: dict[str, Any], field: str) -> Any:
     if field == "labels":
         return record.get("labels")
     return None
+
+
+def compute_domain_hint(
+    record: dict[str, Any],
+    patterns: list[Pattern],
+    field_projector: Callable[[dict[str, Any], str], Any],
+) -> str | None:
+    """Test-local mirror of `server.compute_domain_hint`.
+
+    Pre-projects fields named by the patterns into a flat dict, then
+    delegates to the canonical two-arg helper. Mirrors the wrapper in
+    `server.py` so the contract tests cover the same code path.
+    """
+    if not patterns:
+        return None
+    projected = dict(record)
+    seen: set[str] = set()
+    for pattern in patterns:
+        field = pattern.field
+        if field in seen or "." in field:
+            seen.add(field)
+            continue
+        seen.add(field)
+        value = field_projector(record, field)
+        if value is not None:
+            projected[field] = value
+    return _canonical_compute_domain_hint(projected, patterns)
 
 
 # ---------------------------------------------------------------------------
