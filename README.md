@@ -35,7 +35,7 @@ A security-first, token-efficient MCP server for Home Assistant. 36 tools across
 uv tool install home-assistant-blade-mcp
 
 # Or from source
-git clone https://github.com/piersdd/home-assistant-blade-mcp.git
+git clone https://github.com/Groupthink-dev/home-assistant-blade-mcp.git
 cd home-assistant-blade-mcp
 make install
 ```
@@ -253,9 +253,9 @@ src/ha_blade_mcp/
 └── __main__.py      — Entry point
 ```
 
-**Dependencies:** `fastmcp`, `httpx`, `websockets`, `pydantic`. No `homeassistant` package dependency — pure HTTP/WS against the HA API.
+**Dependencies:** `fastmcp`, `httpx`, `websockets`, `pydantic`, `pyyaml`, `stallari-mcp-helpers`. No `homeassistant` package dependency — pure HTTP/WS against the HA API.
 
-## Sidereal Marketplace
+## Stallari Marketplace
 
 This MCP conforms to the `home-v1` service contract (14/14 operations):
 - **Required (4/4):** entity_list, entity_state, entity_history, area_list
@@ -263,7 +263,7 @@ This MCP conforms to the `home-v1` service contract (14/14 operations):
 - **Optional (2/2):** camera_snapshot, energy_stats
 - **Gated (3/3):** lock_control, alarm_control, automation_create
 
-See `sidereal-plugin.yaml` for the full plugin manifest.
+See `stallari-plugin.yaml` for the full plugin manifest.
 
 ## License
 
