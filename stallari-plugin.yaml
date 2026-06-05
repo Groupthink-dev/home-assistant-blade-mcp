@@ -1,12 +1,12 @@
 name: home-assistant-blade-mcp
-version: "0.1.1"
+version: "0.7.0"
 description: "Home Assistant operations — entities, state, history, control, automations, energy, multi-site"
 author: piersdd
 license: MIT
 tier: certified
 author_type: first-party
 readiness: production
-homepage: https://github.com/piersdd/home-assistant-blade-mcp
+homepage: https://github.com/Groupthink-dev/home-assistant-blade-mcp
 contract: home-v1
 
 services:
