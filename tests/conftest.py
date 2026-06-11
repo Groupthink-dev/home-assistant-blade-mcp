@@ -39,6 +39,12 @@ def ha_env_write(monkeypatch: pytest.MonkeyPatch, ha_env: None) -> None:
     monkeypatch.setenv("HA_WRITE_ENABLED", "true")
 
 
+@pytest.fixture()
+def ha_env_multi_write(monkeypatch: pytest.MonkeyPatch, ha_env_multi: None) -> None:
+    """Multi-provider with write enabled."""
+    monkeypatch.setenv("HA_WRITE_ENABLED", "true")
+
+
 # ---------------------------------------------------------------------------
 # Mock entity builders
 # ---------------------------------------------------------------------------

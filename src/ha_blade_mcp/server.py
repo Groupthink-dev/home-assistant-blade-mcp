@@ -73,7 +73,8 @@ mcp = FastMCP(
         "Home Assistant operations across one or more instances. "
         "Read entity states, control devices, manage automations, query history and energy stats. "
         "Multi-site: pass instance= to target a specific HA instance. "
-        "Write operations require HA_WRITE_ENABLED=true. "
+        "Write operations require HA_WRITE_ENABLED=true and an explicit instance= "
+        "when more than one instance is configured. "
         "Security-sensitive operations (locks, alarms, deletions) require confirm=true."
     ),
 )
@@ -93,6 +94,36 @@ def _get_client() -> HAClient:
 def _error(e: HAError) -> str:
     """Format a client error as a user-friendly string."""
     return f"Error: {e}"
+
+
+def _write_gate(instance: str | None) -> str | None:
+    """Combined gate for mutating tools (AUD-04-01 / DD-343).
+
+    Returns an error string to short-circuit, or ``None`` to proceed. Enforces
+    two rules in order:
+
+    1. Writes must be enabled (``HA_WRITE_ENABLED=true``) — delegates to
+       :func:`require_write`.
+    2. When more than one instance is configured, ``instance`` must be
+       supplied explicitly. Omitting it would fan the mutation out to EVERY
+       configured site (``_resolve_provider(None)`` returns all providers) —
+       fine for reads, unacceptable for a write that could unlock doors or
+       disarm alarms at unintended households (DD-343 connection-scoping
+       threat model).
+
+    Single-instance deployments keep the ergonomic omit (rule 2 is a no-op).
+    """
+    gate = require_write()
+    if gate:
+        return gate
+    names = _get_client().provider_names
+    if instance is None and len(names) > 1:
+        return (
+            f"Error: {len(names)} instances configured ({', '.join(names)}). "
+            "Pass instance=<name> to choose which HA instance this write targets "
+            "(see ha_info)."
+        )
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -872,7 +903,7 @@ async def ha_call_service(
     instance: Annotated[str | None, Field(description="Target HA instance")] = None,
 ) -> str:
     """Generic service call. Covers any HA service domain. Requires HA_WRITE_ENABLED=true."""
-    gate = require_write()
+    gate = _write_gate(instance)
     if gate:
         return gate
     try:
@@ -894,7 +925,7 @@ async def ha_light(
     instance: Annotated[str | None, Field(description="Target HA instance")] = None,
 ) -> str:
     """Control lights: on/off/toggle, brightness, colour, temperature. Requires HA_WRITE_ENABLED=true."""
-    gate = require_write()
+    gate = _write_gate(instance)
     if gate:
         return gate
     if not entity_id and not area:
@@ -939,7 +970,7 @@ async def ha_climate(
     instance: Annotated[str | None, Field(description="Target HA instance")] = None,
 ) -> str:
     """Control HVAC: mode, temperature, fan, preset. Requires HA_WRITE_ENABLED=true."""
-    gate = require_write()
+    gate = _write_gate(instance)
     if gate:
         return gate
     if not entity_id and not area:
@@ -1006,7 +1037,7 @@ async def ha_scene(
     instance: Annotated[str | None, Field(description="Target HA instance")] = None,
 ) -> str:
     """Activate a scene. Requires HA_WRITE_ENABLED=true."""
-    gate = require_write()
+    gate = _write_gate(instance)
     if gate:
         return gate
     try:
@@ -1026,7 +1057,7 @@ async def ha_lock(
     confirm: Annotated[bool, Field(description="Must be true — security-sensitive operation")] = False,
 ) -> str:
     """Lock or unlock a door. Security-sensitive: requires HA_WRITE_ENABLED=true AND confirm=true."""
-    gate = require_write()
+    gate = _write_gate(instance)
     if gate:
         return gate
     conf = require_confirm(confirm)
@@ -1061,7 +1092,7 @@ async def ha_alarm(
     confirm: Annotated[bool, Field(description="Must be true — security-sensitive operation")] = False,
 ) -> str:
     """Arm, disarm, or trigger an alarm panel. Security-sensitive: requires confirm=true."""
-    gate = require_write()
+    gate = _write_gate(instance)
     if gate:
         return gate
     conf = require_confirm(confirm)
@@ -1125,7 +1156,7 @@ async def ha_automation_trigger(
     instance: Annotated[str | None, Field(description="Target HA instance")] = None,
 ) -> str:
     """Manually trigger an existing automation. Requires HA_WRITE_ENABLED=true."""
-    gate = require_write()
+    gate = _write_gate(instance)
     if gate:
         return gate
     try:
@@ -1142,7 +1173,7 @@ async def ha_automation_toggle(
     instance: Annotated[str | None, Field(description="Target HA instance")] = None,
 ) -> str:
     """Enable or disable an automation. Requires HA_WRITE_ENABLED=true."""
-    gate = require_write()
+    gate = _write_gate(instance)
     if gate:
         return gate
     try:
@@ -1164,7 +1195,7 @@ async def ha_automation_create(
     instance: Annotated[str | None, Field(description="Target HA instance")] = None,
 ) -> str:
     """Create a new automation. Requires HA_WRITE_ENABLED=true."""
-    gate = require_write()
+    gate = _write_gate(instance)
     if gate:
         return gate
 
@@ -1194,7 +1225,7 @@ async def ha_automation_delete(
     confirm: Annotated[bool, Field(description="Must be true to confirm deletion")] = False,
 ) -> str:
     """Delete an automation. Destructive: requires HA_WRITE_ENABLED=true AND confirm=true."""
-    gate = require_write()
+    gate = _write_gate(instance)
     if gate:
         return gate
     conf = require_confirm(confirm)
@@ -1214,7 +1245,7 @@ async def ha_script_run(
     instance: Annotated[str | None, Field(description="Target HA instance")] = None,
 ) -> str:
     """Run a script with optional variables. Requires HA_WRITE_ENABLED=true."""
-    gate = require_write()
+    gate = _write_gate(instance)
     if gate:
         return gate
     try:
@@ -1262,7 +1293,7 @@ async def ha_webhook(
     instance: Annotated[str | None, Field(description="Target HA instance")] = None,
 ) -> str:
     """Fire a webhook on the HA instance. Requires HA_WRITE_ENABLED=true."""
-    gate = require_write()
+    gate = _write_gate(instance)
     if gate:
         return gate
     try:
@@ -1297,7 +1328,7 @@ async def ha_notify(
     instance: Annotated[str | None, Field(description="Target HA instance")] = None,
 ) -> str:
     """Send a notification via HA notify service. Requires HA_WRITE_ENABLED=true."""
-    gate = require_write()
+    gate = _write_gate(instance)
     if gate:
         return gate
 

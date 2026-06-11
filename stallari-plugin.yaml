@@ -1,5 +1,5 @@
 name: home-assistant-blade-mcp
-version: "0.7.0"
+version: "0.8.0"
 description: "Home Assistant operations — entities, state, history, control, automations, energy, multi-site"
 author: piersdd
 license: MIT

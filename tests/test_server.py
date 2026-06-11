@@ -328,6 +328,75 @@ class TestHaNotify:
 
 
 # ---------------------------------------------------------------------------
+# AUD-04-01 / DD-343 — write tools refuse an omitted instance when >1 configured
+# ---------------------------------------------------------------------------
+
+
+class TestWriteGateInstanceScoping:
+    """Omitted-instance writes must not fan out to every configured site."""
+
+    @pytest.mark.asyncio
+    async def test_omitted_instance_refused_with_two_instances(self, ha_env_multi_write: None) -> None:
+        with patch.object(server_module, "_get_client") as mock_gc:
+            mock_client = AsyncMock()
+            mock_client.provider_names = ["sandybay", "paddington"]
+            mock_gc.return_value = mock_client
+            result = await server_module.ha_lock(entity_id="lock.front", action="unlock", confirm=True)
+            assert "2 instances configured" in result
+            assert "sandybay" in result
+            assert "paddington" in result
+            mock_client.call_service.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_omitted_instance_refused_real_client(self, ha_env_multi_write: None) -> None:
+        # No mock — the real HAClient parses HA_PROVIDERS; gate fires before any I/O.
+        result = await server_module.ha_call_service("light", "turn_on", target={"entity_id": "light.a"})
+        assert "2 instances configured (sandybay, paddington)" in result
+        assert "instance=" in result
+
+    @pytest.mark.asyncio
+    async def test_explicit_instance_proceeds_with_two_instances(self, ha_env_multi_write: None) -> None:
+        with patch.object(server_module, "_get_client") as mock_gc:
+            mock_client = AsyncMock()
+            mock_client.provider_names = ["sandybay", "paddington"]
+            mock_client.call_service.return_value = [{"instance": "sandybay", "changed_states": 1}]
+            mock_gc.return_value = mock_client
+            result = await server_module.ha_lock(
+                entity_id="lock.front", action="unlock", instance="sandybay", confirm=True
+            )
+            assert "state(s) changed" in result
+            assert mock_client.call_service.call_args[0][2] == "sandybay"
+
+    @pytest.mark.asyncio
+    async def test_omitted_instance_proceeds_with_one_instance(self, ha_env_write: None) -> None:
+        with patch.object(server_module, "_get_client") as mock_gc:
+            mock_client = AsyncMock()
+            mock_client.provider_names = ["default"]
+            mock_client.call_service.return_value = [{"instance": "default", "changed_states": 1}]
+            mock_gc.return_value = mock_client
+            result = await server_module.ha_lock(entity_id="lock.front", action="lock", confirm=True)
+            assert "state(s) changed" in result
+
+    @pytest.mark.asyncio
+    async def test_gate_covers_alarm_and_automation_delete(self, ha_env_multi_write: None) -> None:
+        with patch.object(server_module, "_get_client") as mock_gc:
+            mock_client = AsyncMock()
+            mock_client.provider_names = ["sandybay", "paddington"]
+            mock_gc.return_value = mock_client
+            result = await server_module.ha_alarm("alarm_control_panel.home", "disarm", confirm=True)
+            assert "2 instances configured" in result
+            result = await server_module.ha_automation_delete("my_auto", confirm=True)
+            assert "2 instances configured" in result
+            mock_client.call_service.assert_not_called()
+            mock_client.delete_automation.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_write_disabled_still_reported_first(self, ha_env_multi: None) -> None:
+        result = await server_module.ha_call_service("light", "turn_on")
+        assert "disabled" in result.lower()
+
+
+# ---------------------------------------------------------------------------
 # DD-338 Phase A.1 — scope arg + _meta envelope coverage
 # ---------------------------------------------------------------------------
 

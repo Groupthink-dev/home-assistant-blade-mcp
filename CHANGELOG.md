@@ -5,6 +5,21 @@ All notable changes to `home-assistant-blade-mcp` are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.8.0] - 2026-06-11
+
+### Fixed
+- **AUD-04-01 (critical, DD-385 Phase W):** write tools called with an omitted
+  `instance` no longer fan out to every configured site. All 13 mutating tools
+  (`ha_call_service`, `ha_light`, `ha_climate`, `ha_scene`, `ha_lock`,
+  `ha_alarm`, `ha_automation_trigger`, `ha_automation_toggle`,
+  `ha_automation_create`, `ha_automation_delete`, `ha_script_run`,
+  `ha_webhook`, `ha_notify`) now route through a combined `_write_gate` that
+  REFUSES an omitted `instance` when more than one instance is configured,
+  with an error naming the configured instances (DD-343 multi-connection
+  convention, as established by ubiquiti-unifi-blade-mcp v0.5.0).
+  Single-instance configs keep the ergonomic omit; read/survey tools keep
+  their aggregate fan-out behaviour.
+
 ## [0.7.0] - 2026-05-24
 
 ### Changed
