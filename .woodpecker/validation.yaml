@@ -1,0 +1,51 @@
+# Linux validation lane on the Woodpecker site runners (Track B blade batch 6b,
+# infra/iac ADR-0047 § Decision 6; standard shape in the blade scoping note).
+#
+# The Woodpecker port of `.github/workflows/ci.yml`, which stopped running for pull
+# requests when this repository moved to git.groupthink.asia on 2026-10-02.
+# The GitHub matrix (3.12, 3.13) collapses to the estate python:3.13 pin;
+# `requires-python = ">=3.12"` stays declared.
+#
+# Gate: three green push runs and three green pull-request runs, then Forgejo
+# branch protection on `main` requires `ci/woodpecker/pr/validation`. Until
+# then `main` is protected with no status check and merges are operator acts.
+#
+# Secret-free by construction (CONV-36): no `from_secret`, no `op://`.
+# `.woodpecker/*` is a may-not-mutate CI surface (ADR-0021): edits here are
+# architect-rider work, never dispatched agent work. Every image names its
+# registry and a digest: FCOS Podman refuses short names without a TTY.
+when:
+  - event: push
+    branch: main
+  - event: pull_request
+
+labels:
+  platform: linux/amd64
+  backend: docker
+  estate: meridian
+  lane: linux
+
+clone:
+  - name: clone
+    image: docker.io/woodpeckerci/plugin-git:2.10.1@sha256:550075c844fcec0af41d9d28f9860aa5d8c43e1e9419be4b9266dc02c2f29804
+    settings:
+      partial: false
+
+steps:
+  - name: validate
+    # Same python:3.13-bookworm digest as dev/fabric-spec and infra/iac.
+    image: docker.io/library/python:3.13-bookworm@sha256:227b6570d6ee07061ae6ca2eb04dedfb6d2b34045835f343065b9869e4d427ea
+    environment:
+      UV_CACHE_DIR: /woodpecker/.uv-cache
+      UV_PYTHON_DOWNLOADS: never
+      # Wins over a repo `.python-version` (four blades pin 3.12): the lane runs the estate 3.13 image.
+      UV_PYTHON: "3.13"
+    commands:
+      - python --version
+      - pip install --quiet --disable-pip-version-check uv
+      - uv --version
+      - uv sync --group dev --group test --frozen
+      - uv run ruff check src/ tests/
+      - uv run ruff format --check src/ tests/
+      - uv run mypy src/ha_blade_mcp
+      - uv run pytest tests/ -m "not e2e" --cov=src/ha_blade_mcp --cov-report=term-missing -v
